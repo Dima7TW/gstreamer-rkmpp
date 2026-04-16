@@ -25,6 +25,16 @@
 /* Helper functions */
 #include <gst/video/video.h>
 
+#ifndef GST_VIDEO_FLAG_ARM_AFBC
+#define GST_VIDEO_FLAG_ARM_AFBC (1UL << 31)
+#define GST_VIDEO_INFO_SET_AFBC(i) \
+  GST_VIDEO_INFO_FLAG_SET (i, GST_VIDEO_FLAG_ARM_AFBC)
+#define GST_VIDEO_INFO_UNSET_AFBC(i) \
+  GST_VIDEO_INFO_FLAG_UNSET (i, GST_VIDEO_FLAG_ARM_AFBC)
+#define GST_VIDEO_INFO_IS_AFBC(i) \
+  GST_VIDEO_INFO_FLAG_IS_SET (i, GST_VIDEO_FLAG_ARM_AFBC)
+#endif
+
 G_BEGIN_DECLS
 #define GST_TYPE_XV_IMAGE_SINK \
   (gst_xv_image_sink_get_type())
@@ -124,6 +134,10 @@ struct _GstXvImageSink
   /* saved render rectangle until we have a window */
   gboolean pending_render_rect;
   GstVideoRectangle render_rect;
+
+  guintptr xwindow_id;
+
+  gboolean decorations;
 };
 
 struct _GstXvImageSinkClass

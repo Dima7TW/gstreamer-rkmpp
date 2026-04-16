@@ -972,6 +972,18 @@ gst_pad_mode_get_name (GstPadMode mode)
   return "unknown";
 }
 
+static inline void
+wait_activation_locked (GstPad * pad)
+{
+  /* HACK: 1 sec timeout for activation */
+  for (gint i = 0; i < 1000; i++) {
+    if (G_LIKELY (!pad->priv->in_activation))
+      break;
+
+    g_usleep(1000);
+  }
+}
+
 /* Returns TRUE if pad wasn't already in the new_mode */
 static gboolean
 pre_activate (GstPad * pad, GstPadMode new_mode)
@@ -979,8 +991,13 @@ pre_activate (GstPad * pad, GstPadMode new_mode)
   switch (new_mode) {
     case GST_PAD_MODE_NONE:
       GST_OBJECT_LOCK (pad);
+#if 0
       while (G_UNLIKELY (pad->priv->in_activation))
         g_cond_wait (&pad->priv->activation_cond, GST_OBJECT_GET_LOCK (pad));
+#else
+      if (G_UNLIKELY (pad->priv->in_activation))
+        wait_activation_locked (pad);
+#endif
       if (new_mode == GST_PAD_MODE (pad)) {
         GST_WARNING_OBJECT (pad,
             "Pad is already in the process of being deactivated");
@@ -999,8 +1016,13 @@ pre_activate (GstPad * pad, GstPadMode new_mode)
     case GST_PAD_MODE_PUSH:
     case GST_PAD_MODE_PULL:
       GST_OBJECT_LOCK (pad);
+#if 0
       while (G_UNLIKELY (pad->priv->in_activation))
         g_cond_wait (&pad->priv->activation_cond, GST_OBJECT_GET_LOCK (pad));
+#else
+      if (G_UNLIKELY (pad->priv->in_activation))
+        wait_activation_locked (pad);
+#endif
       if (new_mode == GST_PAD_MODE (pad)) {
         GST_WARNING_OBJECT (pad,
             "Pad is already in the process of being activated");

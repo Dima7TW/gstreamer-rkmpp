@@ -39,6 +39,8 @@
 #include "config.h"
 #endif
 
+#include <stdlib.h>
+
 #include "gstautodetectelements.h"
 #include "gstautodetect.h"
 #include "gstautoaudiosink.h"
@@ -99,6 +101,7 @@ gst_auto_audio_sink_init (GstAutoAudioSink * sink)
 
   autodetect->media_klass = "Audio";
   autodetect->flag = GST_ELEMENT_FLAG_SINK;
+  autodetect->preferred = g_getenv ("AUTOAUDIOSINK_PREFERRED");
 
   sink->ts_offset = DEFAULT_TS_OFFSET;
 }

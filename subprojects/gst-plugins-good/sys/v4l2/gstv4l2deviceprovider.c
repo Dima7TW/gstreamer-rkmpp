@@ -25,6 +25,7 @@
 
 #include "gstv4l2deviceprovider.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -146,6 +147,44 @@ gst_v4l2_device_provider_probe_device (GstV4l2DeviceProvider * provider,
 
     type = GST_V4L2_DEVICE_TYPE_SOURCE;
     v4l2obj->skip_try_fmt_probes = TRUE;
+
+    if (!strncmp ((char *) v4l2obj->vcap.driver, "rk", strlen("rk"))) {
+      /* Filter out unavailable RK source devices */
+      const gchar *devices, *ptr;
+      gchar pattern[64];
+      gboolean found = FALSE;
+
+      devices = g_getenv ("GST_V4L2SRC_RK_DEVICES");
+      if (!devices)
+        devices = g_getenv ("GST_V4L2SRC_DEVICES");
+      if (!devices)
+        devices = "_mainpath:_selfpath:_bypass:_scale";
+
+      while (devices && devices[0]) {
+        while (devices[0] == ':')
+          devices ++;
+
+        if (!sscanf (devices, "%32[^:]", pattern))
+          break;
+
+        devices += strlen (pattern);
+
+        if (!(ptr = strstr (device_name, pattern)))
+          continue;
+
+        /* Name ends with pattern[0-9] */
+        ptr += strlen (pattern);
+        if (ptr[0] == '\0' || (ptr[0] >= '0' && ptr[0] <= '9')) {
+          found = TRUE;
+          break;
+        }
+      }
+
+      if (!found) {
+        GST_WARNING ("%s(%s) been ignored", device_path, device_name);
+        goto destroy;
+      }
+    }
   }
 
   if (v4l2obj->device_caps &

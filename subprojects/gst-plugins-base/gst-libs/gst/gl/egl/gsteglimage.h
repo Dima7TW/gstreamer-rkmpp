@@ -26,6 +26,8 @@
 #include <gst/gl/gstgl_fwd.h>
 #include <gst/gl/gstglformat.h>
 
+#include <libdrm/drm_fourcc.h>
+
 G_BEGIN_DECLS
 
 GST_GL_API GType gst_egl_image_get_type (void);

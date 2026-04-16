@@ -38,6 +38,10 @@ struct _GstWlDisplay
 };
 
 GST_WL_API
+void gst_wl_display_set_touch_surface (GstWlDisplay * self,
+    struct wl_surface *touch_surface);
+
+GST_WL_API
 GstWlDisplay *gst_wl_display_new (const gchar * name, GError ** error);
 
 GST_WL_API
@@ -68,7 +72,7 @@ gboolean gst_wl_display_check_format_for_shm (GstWlDisplay * self,
 
 GST_WL_API
 gboolean gst_wl_display_check_format_for_dmabuf (GstWlDisplay * self,
-    const GstVideoInfoDmaDrm *drm_info);
+    const guint fourcc, const guint64 modifier);
 
 GST_WL_API
 struct wl_display *gst_wl_display_get_display (GstWlDisplay * self);

@@ -967,11 +967,8 @@ gst_jpeg_parse_handle_frame (GstBaseParse * bparse, GstBaseParseFrame * frame,
               parse->renegotiate = TRUE;
             }
           } else {
-            GST_ELEMENT_ERROR (parse, STREAM, FORMAT,
+            GST_ELEMENT_WARNING (parse, STREAM, FORMAT,
                 ("Invalid data"), ("Duplicated or bad SOF marker"));
-            gst_buffer_unmap (frame->buffer, &mapinfo);
-            gst_jpeg_parse_reset (parse);
-            return GST_FLOW_ERROR;
           }
         }
         break;

@@ -11965,7 +11965,8 @@ qtdemux_parse_trak (GstQTDemux * qtdemux, GNode * trak, guint32 * mvhd_matrix)
      * some of those trailers, nowadays, have prologue images that are
      * themselves video tracks as well. I haven't really found a way to
      * identify those yet, except for just looking at their duration. */
-    if (tdur1 != 0 && (tdur2 * 10 / tdur1) < 2) {
+    if (tdur1 != 0 && (tdur2 * 10 / tdur1) < 2
+        && (stream->duration / stream->timescale) < 30) {
       GST_WARNING_OBJECT (qtdemux,
           "Track shorter than 20%% (%" G_GUINT64_FORMAT "/%" G_GUINT32_FORMAT
           " vs. %" G_GUINT64_FORMAT "/%" G_GUINT32_FORMAT ") of the stream "

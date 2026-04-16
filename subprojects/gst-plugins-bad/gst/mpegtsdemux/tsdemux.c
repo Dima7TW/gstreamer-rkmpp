@@ -3542,6 +3542,14 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
 
     if (G_UNLIKELY (stream->pending_ts && !check_pending_buffers (demux))) {
       if (buffer) {
+        GList *walk;
+        for (walk = demux->program->stream_list; walk; walk = g_list_next (walk)) {
+          MpegTSBaseStream *bs = (MpegTSBaseStream*)walk->data;
+          if (bs->registration_id == DRF_ID_VC1) {
+            gst_buffer_unref(buffer);
+            goto beach;
+          }
+        }
         PendingBuffer *pend;
         pend = g_new0 (PendingBuffer, 1);
         pend->buffer = buffer;

@@ -273,6 +273,20 @@ gst_auto_detect_find_best (GstAutoDetect * self)
   GST_LOG_OBJECT (self, "Trying to find usable %s elements ...",
       self->media_klass_lc);
 
+  if (self->preferred) {
+    for (item = list; item != NULL; item = item->next) {
+      GstElementFactory *f = GST_ELEMENT_FACTORY (item->data);
+
+      if (!strcmp (self->preferred, GST_OBJECT_NAME (f))) {
+        GST_DEBUG_OBJECT (self, "Preferred %s", GST_OBJECT_NAME (f));
+
+        list = g_list_delete_link (list, item);
+        list = g_list_prepend (list, f);
+        break;
+      }
+    }
+  }
+
   for (item = list; item != NULL; item = item->next) {
     GstElementFactory *f = GST_ELEMENT_FACTORY (item->data);
     GstElement *el;

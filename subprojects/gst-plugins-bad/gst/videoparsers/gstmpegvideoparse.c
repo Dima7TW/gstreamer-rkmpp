@@ -584,6 +584,7 @@ gst_mpegv_parse_process_sc (GstMpegvParse * mpvparse,
       GST_LOG_OBJECT (mpvparse, "Couldn't parse picture at offset %d",
           mpvparse->pic_offset);
 
+#if 0
     /* if terminating packet is a picture, we need to check if it has same TSN as the picture that is being
        terminated. If it does, we need to keep those together, as these packets are two fields of the same
        frame */
@@ -601,6 +602,7 @@ gst_mpegv_parse_process_sc (GstMpegvParse * mpvparse,
           ret = FALSE;
       }
     }
+#endif
   }
 
   return ret;

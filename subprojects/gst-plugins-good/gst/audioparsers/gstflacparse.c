@@ -1568,11 +1568,14 @@ gst_flac_parse_parse_frame (GstBaseParse * parse, GstBaseParseFrame * frame,
     gboolean is_last = map.data[0] >> 7;
     guint type = (map.data[0] & 0x7F);
 
+    /* HACK: Handle metadata 127 */
+#if 0
     if (type == 127) {
       GST_WARNING_OBJECT (flacparse, "Invalid metadata block type 127");
       res = GST_BASE_PARSE_FLOW_DROPPED;
       goto cleanup;
     }
+#endif
 
     GST_DEBUG_OBJECT (flacparse, "Handling metadata block of type %u", type);
 

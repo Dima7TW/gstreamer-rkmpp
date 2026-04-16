@@ -856,8 +856,9 @@ gst_egl_image_from_dmabuf_direct_target_with_dma_drm (GstGLContext * context,
 {
   EGLImageKHR img;
   const GstVideoInfo *in_info = &in_info_dma->vinfo;
+  GstVideoFormat format = GST_VIDEO_INFO_FORMAT (in_info);
   guint32 fourcc;
-  guint64 modifier;
+  guint64 modifier = DRM_FORMAT_MOD_LINEAR;
   gint i;
   gboolean with_modifiers;
 
@@ -869,6 +870,7 @@ gst_egl_image_from_dmabuf_direct_target_with_dma_drm (GstGLContext * context,
    */
   guintptr attribs[41];         /* 6 + 10 * 3 + 4 + 1 */
   gint atti = 0;
+  gfloat stride_scale = 1.0f;
 
   if (!gst_egl_image_check_dmabuf_direct_with_dma_drm (context, in_info_dma,
           target))
@@ -881,6 +883,22 @@ gst_egl_image_from_dmabuf_direct_target_with_dma_drm (GstGLContext * context,
 
   if (!with_modifiers && modifier != DRM_FORMAT_MOD_LINEAR)
     return NULL;
+
+  if (GST_VIDEO_INFO_IS_AFBC (in_info)) {
+    if (!with_modifiers)
+      return NULL;
+
+    /* Mali uses these formats instead */
+    if (format == GST_VIDEO_FORMAT_NV12)
+      stride_scale = 1.5;
+    else if (format == GST_VIDEO_FORMAT_NV12_10LE40)
+      stride_scale = 1.5;
+    else if (format == GST_VIDEO_FORMAT_NV16)
+      stride_scale = 2;
+
+    modifier = DRM_AFBC_MODIFIER;
+    n_planes = 1;
+  }
 
   /* EGL DMABuf importation supports a maximum of 3 planes */
   if (G_UNLIKELY (n_planes > 3))
@@ -900,7 +918,7 @@ gst_egl_image_from_dmabuf_direct_target_with_dma_drm (GstGLContext * context,
     attribs[atti++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
     attribs[atti++] = offset[0];
     attribs[atti++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
-    attribs[atti++] = get_egl_stride (in_info, 0);
+    attribs[atti++] = get_egl_stride (in_info, 0) * stride_scale;
     if (with_modifiers && modifier != DRM_FORMAT_MOD_INVALID) {
       attribs[atti++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
       attribs[atti++] = modifier & 0xffffffff;

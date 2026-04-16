@@ -314,6 +314,9 @@ libdrm_dep = dependency('libdrm', version : '>= 2.4.98',
 
 core_conf.set('HAVE_LIBDRM', libdrm_dep.found())
 
+rga_dep = dependency('librga', required: false)
+core_conf.set('HAVE_RGA', rga_dep.found())
+
 # X11 checks are for sys/ and tests/
 x11_dep = dependency('x11', required : get_option('x11'))
 # GIO is used by the GIO plugin, and by the TCP, SDP, and RTSP plugins

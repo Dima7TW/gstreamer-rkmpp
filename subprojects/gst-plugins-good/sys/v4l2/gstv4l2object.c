@@ -25,6 +25,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -56,6 +58,9 @@ GST_DEBUG_CATEGORY_EXTERN (v4l2_debug);
 #define ENCODED_BUFFER_MIN_SIZE         (256 * 1024)
 #define GST_V4L2_DEFAULT_WIDTH          320
 #define GST_V4L2_DEFAULT_HEIGHT         240
+
+static guint DEFAULT_PROP_MIN_BUFFERS = 0;
+static gboolean DEFAULT_PROP_BUFFER_SHARING = TRUE;
 
 enum
 {
@@ -336,6 +341,14 @@ void
 gst_v4l2_object_install_properties_helper (GObjectClass * gobject_class,
     const char *default_device)
 {
+  const gchar *buf = g_getenv ("GST_V4L2_MIN_BUFS");
+
+  if (buf)
+    DEFAULT_PROP_MIN_BUFFERS = atoi (buf);
+
+  if ((buf = g_getenv ("GST_V4L2_BUF_SHARING")))
+    DEFAULT_PROP_BUFFER_SHARING = buf[0] == '1';
+
   g_object_class_install_property (gobject_class, PROP_DEVICE,
       g_param_spec_string ("device", "Device", "Device location",
           default_device, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
@@ -453,6 +466,18 @@ gst_v4l2_object_install_properties_helper (GObjectClass * gobject_class,
   g_object_class_install_property (gobject_class, PROP_FORCE_ASPECT_RATIO,
       g_param_spec_boolean ("force-aspect-ratio", "Force aspect ratio",
           "When enabled, the pixel aspect ratio will be enforced", TRUE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MIN_BUFFERS,
+      g_param_spec_uint ("min-buffers", "Min buffers",
+          "Override the driver's min buffers (0 means auto)",
+          0, VIDEO_MAX_FRAME, DEFAULT_PROP_MIN_BUFFERS,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_BUFFER_SHARING,
+      g_param_spec_boolean ("buffer-sharing", "Buffer sharing",
+          "Enabled buffer sharing",
+          DEFAULT_PROP_BUFFER_SHARING,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gst_type_mark_as_plugin_api (GST_TYPE_V4L2_DEVICE_FLAGS, 0);
@@ -574,6 +599,9 @@ gst_v4l2_object_new (GstElement * element,
     v4l2object->mmap = mmap;
     v4l2object->munmap = munmap;
   }
+
+  v4l2object->min_buffers = DEFAULT_PROP_MIN_BUFFERS;
+  v4l2object->buffer_sharing = DEFAULT_PROP_BUFFER_SHARING;
 
   return v4l2object;
 }
@@ -747,6 +775,12 @@ gst_v4l2_object_set_property_helper (GstV4l2Object * v4l2object,
     case PROP_FORCE_ASPECT_RATIO:
       v4l2object->keep_aspect = g_value_get_boolean (value);
       break;
+    case PROP_MIN_BUFFERS:
+      v4l2object->min_buffers = g_value_get_uint (value);
+      break;
+    case PROP_BUFFER_SHARING:
+      v4l2object->buffer_sharing = g_value_get_boolean (value);
+      break;
     default:
       return FALSE;
       break;
@@ -844,6 +878,12 @@ gst_v4l2_object_get_property_helper (GstV4l2Object * v4l2object,
     case PROP_FORCE_ASPECT_RATIO:
       g_value_set_boolean (value, v4l2object->keep_aspect);
       break;
+    case PROP_MIN_BUFFERS:
+      g_value_set_uint (value, v4l2object->min_buffers);
+      break;
+    case PROP_BUFFER_SHARING:
+      g_value_set_boolean (value, v4l2object->buffer_sharing);
+      break;
     default:
       return FALSE;
       break;
@@ -855,6 +895,9 @@ static void
 gst_v4l2_get_driver_min_buffers (GstV4l2Object * v4l2object)
 {
   struct v4l2_control control = { 0, };
+
+  if (v4l2object->min_buffers)
+    return;
 
   g_return_if_fail (GST_V4L2_IS_OPEN (v4l2object));
 
@@ -1212,6 +1255,38 @@ gst_v4l2_object_format_get_rank (const struct v4l2_fmtdesc *fmt)
     default:
       rank = 0;
       break;
+  }
+
+  {
+    const char *buf = g_getenv ("GST_V4L2_PREFERRED_FOURCC");
+    int max_rank = YUV_BASE_RANK * 2;
+
+    while (buf) {
+      if (buf[0] == ':')
+        buf++;
+
+      if (!strncmp (buf, (char *) &fourcc, 4))
+        rank = max_rank;
+
+      buf = strchr (buf, ':');
+      max_rank--;
+    }
+  }
+
+  {
+    const char *buf = g_getenv ("GST_V4L2_PREFERRED_FOURCC");
+    int max_rank = YUV_BASE_RANK * 2;
+
+    while (buf) {
+      if (buf[0] == ':')
+        buf++;
+
+      if (!strncmp (buf, (char *) &fourcc, 4))
+        rank = max_rank;
+
+      buf = strchr (buf, ':');
+      max_rank--;
+    }
   }
 
   /* All ranks are below 1<<15 so a shift by 15
@@ -2818,11 +2893,18 @@ gst_v4l2_object_probe_caps_for_format (GstV4l2Object * v4l2object,
   gint fd = v4l2object->video_fd;
   struct v4l2_frmsizeenum size;
   GList *results = NULL;
+  guint32 max_width = G_MAXINT, max_height = G_MAXINT;
   guint32 w, h;
 
   if (pixelformat == GST_MAKE_FOURCC ('M', 'P', 'E', 'G')) {
     gst_caps_append_structure (ret, gst_structure_copy (template));
     return ret;
+  }
+
+  if (!V4L2_TYPE_IS_OUTPUT (v4l2object->type)) {
+    const gchar *buf = g_getenv ("GST_V4L2SRC_MAX_RESOLUTION");
+    if (buf)
+      sscanf (buf, "%ux%u", &max_width, &max_height);
   }
 
   memset (&size, 0, sizeof (struct v4l2_frmsizeenum));
@@ -2843,8 +2925,8 @@ gst_v4l2_object_probe_caps_for_format (GstV4l2Object * v4l2object,
       GST_LOG_OBJECT (v4l2object->dbg_obj, "got discrete frame size %dx%d",
           size.discrete.width, size.discrete.height);
 
-      w = MIN (size.discrete.width, G_MAXINT);
-      h = MIN (size.discrete.height, G_MAXINT);
+      w = MIN (size.discrete.width, max_width);
+      h = MIN (size.discrete.height, max_height);
 
       if (w && h) {
         tmp =
@@ -2888,8 +2970,8 @@ gst_v4l2_object_probe_caps_for_format (GstV4l2Object * v4l2object,
     step_h = MAX (size.stepwise.step_height, 1);
     w = MAX (size.stepwise.min_width, step_w);
     h = MAX (size.stepwise.min_height, step_h);
-    maxw = MIN (size.stepwise.max_width, G_MAXINT);
-    maxh = MIN (size.stepwise.max_height, G_MAXINT);
+    maxw = MIN (size.stepwise.max_width, max_width);
+    maxh = MIN (size.stepwise.max_height, max_height);
 
     /* ensure maxes are multiples of the steps */
     maxw -= maxw % step_w;
@@ -2933,8 +3015,8 @@ gst_v4l2_object_probe_caps_for_format (GstV4l2Object * v4l2object,
 
     w = MAX (size.stepwise.min_width, 1);
     h = MAX (size.stepwise.min_height, 1);
-    maxw = MIN (size.stepwise.max_width, G_MAXINT);
-    maxh = MIN (size.stepwise.max_height, G_MAXINT);
+    maxw = MIN (size.stepwise.max_width, max_width);
+    maxh = MIN (size.stepwise.max_height, max_height);
 
     tmp =
         gst_v4l2_object_probe_caps_for_format_and_size (v4l2object, pixelformat,
@@ -5293,7 +5375,11 @@ gst_v4l2_object_decide_allocation (GstV4l2Object * obj, GstQuery * query)
       gst_v4l2_object_match_buffer_layout_from_struct (obj, params, caps, size);
   }
 
+#if 0
   can_share_own_pool = (has_video_meta || !obj->need_video_meta);
+#else
+  can_share_own_pool = obj->buffer_sharing;
+#endif
 
   gst_v4l2_get_driver_min_buffers (obj);
   /* We can't share our own pool, if it exceed V4L2 capacity */

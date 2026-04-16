@@ -12,12 +12,13 @@ zvbi_sources = [
 if closedcaption_dep.found()
   gstclosedcaption = library('gstclosedcaption',
     'gstcccombiner.c', 'gstccextractor.c', 'gstccconverter.c', 'gstcea608mux.c', 'gstclosedcaption.c',
-    'gstline21dec.c', 'gstcea708decoder.c', 'gstceaccoverlay.c', 'gstline21enc.c', 'ccutils.c',
+    'gstline21dec.c', 'gstcea708decoder.c', 'gstceaccoverlay.c', 'gstline21enc.c', 'ccutils.c', 'gsth264ccextractor.c', 'gsth265ccextractor.c',
     zvbi_sources,
     c_args : gst_plugins_bad_args,
     link_args : noseh_link_args,
     include_directories : [configinc],
-    dependencies : [gstvideo_dep, gstbase_dep, gst_dep, closedcaption_dep, libm],
+    dependencies : [gstvideo_dep, gstbase_dep, gst_dep, closedcaption_dep, libm,
+                    gstcodecs_dep],
     install : true,
     install_dir : plugins_install_dir,
   )

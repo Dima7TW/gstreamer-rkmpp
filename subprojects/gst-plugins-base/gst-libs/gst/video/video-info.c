@@ -1265,6 +1265,13 @@ fill_planes (GstVideoInfo * info, gsize plane_size[GST_VIDEO_MAX_PLANES])
         cr_h = GST_ROUND_UP_2 (cr_h);
       info->size = info->offset[1] + info->stride[0] * cr_h;
       break;
+    case GST_VIDEO_FORMAT_NV16_10LE40:
+      info->stride[0] = ((width * 5 >> 2) + 4) / 5 * 5;
+      info->stride[1] = info->stride[0];
+      info->offset[0] = 0;
+      info->offset[1] = info->stride[0] * height;
+      info->size = info->offset[1] + info->stride[0] * height;
+      break;
     case GST_VIDEO_FORMAT_NV12_8L128:
     {
       gint tile_size = GST_VIDEO_FORMAT_INFO_TILE_SIZE (info->finfo, 0);

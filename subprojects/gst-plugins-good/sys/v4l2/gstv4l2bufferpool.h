@@ -97,6 +97,8 @@ struct _GstV4l2BufferPool
 
   /* Control to warn only once on buggy feild driver bug */
   gboolean has_warned_on_buggy_field;
+
+  guint32 extra_buf_flags;
 };
 
 struct _GstV4l2BufferPoolClass

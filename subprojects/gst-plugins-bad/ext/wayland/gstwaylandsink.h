@@ -57,11 +57,18 @@ struct _GstWaylandSink
   GstVideoInfoDmaDrm drm_info;
   gboolean fullscreen;
   GstCaps *caps;
+  GstWlWindowLayer layer;
+  gdouble alpha;
+  GstWlWindowFillMode fill_mode;
+
+  gboolean force_dmabuf;
 
   gchar *display_name;
 
   GMutex render_lock;
   GstBuffer *last_buffer;
+
+  GstVideoRectangle render_rectangle;
 
   GstVideoOrientationMethod sink_rotate_method;
   GstVideoOrientationMethod tag_rotate_method;

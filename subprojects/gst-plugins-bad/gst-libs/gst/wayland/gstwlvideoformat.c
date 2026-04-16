@@ -25,9 +25,11 @@
 #include <config.h>
 #endif
 
+#include <drm_fourcc.h>
+
 #include "gstwlvideoformat.h"
 
-#include <drm_fourcc.h>
+#include <gst/video/video-info-dma.h>
 
 /* This can be removed once we can bump the required wl_client_dep,
  * which again is blocked by a CI image update, see
@@ -82,9 +84,12 @@ static const wl_VideoFormat wl_formats[] = {
   {WL_SHM_FORMAT_UYVY, DRM_FORMAT_UYVY, GST_VIDEO_FORMAT_UYVY},
   {WL_SHM_FORMAT_AYUV, DRM_FORMAT_AYUV, GST_VIDEO_FORMAT_AYUV},
   {WL_SHM_FORMAT_NV12, DRM_FORMAT_NV12, GST_VIDEO_FORMAT_NV12},
+  {-1, DRM_FORMAT_NV15, GST_VIDEO_FORMAT_NV12_10LE40},
   {WL_SHM_FORMAT_NV21, DRM_FORMAT_NV21, GST_VIDEO_FORMAT_NV21},
   {WL_SHM_FORMAT_NV16, DRM_FORMAT_NV16, GST_VIDEO_FORMAT_NV16},
+  {-1, DRM_FORMAT_NV20, GST_VIDEO_FORMAT_NV16_10LE40},
   {WL_SHM_FORMAT_NV61, DRM_FORMAT_NV61, GST_VIDEO_FORMAT_NV61},
+  {WL_SHM_FORMAT_NV24, DRM_FORMAT_NV24, GST_VIDEO_FORMAT_NV24},
   {WL_SHM_FORMAT_P010, DRM_FORMAT_P010, GST_VIDEO_FORMAT_P010_10LE},
   {WL_SHM_FORMAT_NV15, DRM_FORMAT_NV15, GST_VIDEO_FORMAT_NV12_10LE40},
   {WL_SHM_FORMAT_YUV410, DRM_FORMAT_YUV410, GST_VIDEO_FORMAT_YUV9},

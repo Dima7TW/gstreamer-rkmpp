@@ -232,6 +232,8 @@ struct _GstV4l2Object {
   
   guint max_width;
   guint max_height;
+
+  gboolean buffer_sharing;
 };
 
 struct _GstV4l2ObjectClassHelper {
@@ -256,7 +258,9 @@ GType gst_v4l2_object_get_type (void);
     PROP_CAPTURE_IO_MODE,     \
     PROP_EXTRA_CONTROLS,      \
     PROP_PIXEL_ASPECT_RATIO,  \
-    PROP_FORCE_ASPECT_RATIO
+    PROP_FORCE_ASPECT_RATIO,  \
+    PROP_MIN_BUFFERS,         \
+    PROP_BUFFER_SHARING
 
 /* create/destroy */
 GstV4l2Object*  gst_v4l2_object_new       (GstElement * element,

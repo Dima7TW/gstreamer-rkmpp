@@ -2013,6 +2013,7 @@ record_pcr (MpegTSPacketizer2 * packetizer, MpegTSPCR * pcrtable,
      *    Initialize current to that group
      */
     GST_DEBUG ("No current window estimator, Checking for group to use");
+create_new_group:
     for (tmp = pcrtable->groups; tmp; tmp = tmp->next) {
       PCROffsetGroup *group = (PCROffsetGroup *) tmp->data;
 
@@ -2085,6 +2086,15 @@ record_pcr (MpegTSPacketizer2 * packetizer, MpegTSPCR * pcrtable,
   if (G_UNLIKELY (corpcr - current->pending[current->last].pcr >
           500 * PCR_MSECOND)) {
     GST_DEBUG ("New PCR more than 500ms away, handling discont");
+
+#if 1
+    /**
+     * Create new discont group instead of reusing the current, otherwise
+     * it will try to handle the gap by just adding 500ms to pcroffset.
+     */
+    _close_current_group (pcrtable);
+    goto create_new_group;
+#else
     /* Take values from current and put them in the current group (closing it) */
     /* Create new group with pcr/offset just after the current group
      * and mark it as a discont */
@@ -2092,6 +2102,7 @@ record_pcr (MpegTSPacketizer2 * packetizer, MpegTSPCR * pcrtable,
     _append_group_values (current->group, current->pending[current->last]);
     _set_current_group (pcrtable, current->group, pcr, offset, TRUE);
     return;
+#endif
   }
 
   if (G_UNLIKELY (corpcr == current->last_value.pcr)) {

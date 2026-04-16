@@ -59,7 +59,7 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE ("sink",
     GST_STATIC_CAPS ("video/mpegts, " "systemstream = (boolean) true ")
     );
 
-#define DEFAULT_IGNORE_PCR FALSE
+static int DEFAULT_IGNORE_PCR = FALSE;
 
 enum
 {
@@ -156,6 +156,9 @@ mpegts_base_class_init (MpegTSBaseClass * klass)
    *
    * Since: 1.18
    */
+  if (g_getenv ("GST_TSDEMUX_IGNORE_PCR"))
+    DEFAULT_IGNORE_PCR = TRUE;
+
   g_object_class_install_property (gobject_class, PROP_IGNORE_PCR,
       g_param_spec_boolean ("ignore-pcr", "Ignore PCR stream for timing",
           "Ignore PCR stream for timing", DEFAULT_IGNORE_PCR,

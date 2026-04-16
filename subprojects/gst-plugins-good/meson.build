@@ -389,6 +389,9 @@ gst_plugins_good_args = ['-DHAVE_CONFIG_H']
 configinc = include_directories('.')
 libsinc = include_directories('gst-libs')
 
+rga_dep = dependency('librga', required: false)
+cdata.set('HAVE_RGA', rga_dep.found())
+
 have_orcc = false
 orcc_args = []
 orc_targets = []

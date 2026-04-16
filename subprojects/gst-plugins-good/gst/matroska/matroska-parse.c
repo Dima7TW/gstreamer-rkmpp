@@ -1875,6 +1875,7 @@ gst_matroska_parse_parse_blockgroup_or_simpleblock (GstMatroskaParse * parse,
          index entries point to keyframes, but if that is not true we
          will instead skip until the next keyframe. */
       if (GST_CLOCK_TIME_IS_VALID (lace_time) &&
+          parse->common.allow_skipping &&
           stream->type == GST_MATROSKA_TRACK_TYPE_VIDEO &&
           stream->index_table && parse->common.segment.rate > 0.0) {
         GstMatroskaTrackVideoContext *videocontext =

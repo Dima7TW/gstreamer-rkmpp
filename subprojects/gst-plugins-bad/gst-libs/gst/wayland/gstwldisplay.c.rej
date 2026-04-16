@@ -1,0 +1,11 @@
+--- gst-libs/gst/wayland/gstwldisplay.c
++++ gst-libs/gst/wayland/gstwldisplay.c
+@@ -205,6 +206,8 @@ dmabuf_modifier (void *data, struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf,
+ {
+   GstWlDisplay *self = data;
+   guint64 modifier = (guint64) modifier_hi << 32 | modifier_lo;
++
++#if 0 // HACK: Allow all formats
+   static gboolean table_header = TRUE;
+ 
+   GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);

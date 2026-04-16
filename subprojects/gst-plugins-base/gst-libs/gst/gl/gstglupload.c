@@ -697,7 +697,8 @@ _gl_memory_upload_free (gpointer impl)
 
 static GstStaticCaps _gl_memory_upload_caps =
 GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE_WITH_FEATURES
-    (GST_CAPS_FEATURE_MEMORY_GL_MEMORY, GST_GL_MEMORY_VIDEO_FORMATS_STR));
+    (GST_CAPS_FEATURE_MEMORY_GL_MEMORY, GST_GL_MEMORY_VIDEO_FORMATS_STR) ";"
+    GST_VIDEO_CAPS_MAKE ("{NV12, NV12_10LE40}") ", arm-afbc = (int) 1");
 
 static const UploadMethod _gl_memory_upload = {
   "GLMemory",
@@ -3207,8 +3208,8 @@ static const UploadMethod *upload_methods[] = {
   &_passthrough_upload,
   &_gl_memory_upload,
 #if GST_GL_HAVE_DMABUF
-  &_direct_dma_buf_upload,
   &_direct_dma_buf_external_upload,
+  &_direct_dma_buf_upload,
   &_dma_buf_upload,
 #endif
 #if GST_GL_HAVE_VIV_DIRECTVIV
@@ -3399,6 +3400,9 @@ static gboolean
 _gst_gl_upload_set_caps_unlocked (GstGLUpload * upload, GstCaps * in_caps,
     GstCaps * out_caps)
 {
+  GstStructure *s;
+  gint value;
+
   g_return_val_if_fail (upload != NULL, FALSE);
   g_return_val_if_fail (gst_caps_is_fixed (in_caps), FALSE);
 
@@ -3419,6 +3423,15 @@ _gst_gl_upload_set_caps_unlocked (GstGLUpload * upload, GstCaps * in_caps,
         &upload->priv->in_info, DRM_FORMAT_MOD_LINEAR);
   }
   gst_video_info_from_caps (&upload->priv->out_info, out_caps);
+
+  /* parse AFBC from caps */
+  s = gst_caps_get_structure (in_caps, 0);
+  if (gst_structure_get_int (s, "arm-afbc", &value)) {
+    if (value)
+      GST_VIDEO_INFO_SET_AFBC (&upload->priv->in_info);
+    else
+      GST_VIDEO_INFO_UNSET_AFBC (&upload->priv->in_info);
+  }
 
   upload->priv->method = NULL;
   upload->priv->method_impl = NULL;

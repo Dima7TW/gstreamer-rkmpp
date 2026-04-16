@@ -596,11 +596,22 @@ gst_h265_parse_vui_parameters (GstH265SPS * sps, NalReader * nr)
     READ_UINT8 (nr, vui->tiles_fixed_structure_flag, 1);
     READ_UINT8 (nr, vui->motion_vectors_over_pic_boundaries_flag, 1);
     READ_UINT8 (nr, vui->restricted_ref_pic_lists_flag, 1);
-    READ_UE_MAX (nr, vui->min_spatial_segmentation_idc, 4096);
-    READ_UE_MAX (nr, vui->max_bytes_per_pic_denom, 16);
-    READ_UE_MAX (nr, vui->max_bits_per_min_cu_denom, 16);
-    READ_UE_MAX (nr, vui->log2_max_mv_length_horizontal, 16);
-    READ_UE_MAX (nr, vui->log2_max_mv_length_vertical, 15);
+
+#define READ_UE_MAX_WARN(nr, val, max) { \
+  guint32 tmp; \
+  READ_UE (nr, tmp); \
+  if (tmp > max) { \
+    GST_WARNING ("value for '" G_STRINGIFY (tmp) \
+                 "' greater than max. value: %d, max %d", tmp, max); \
+  } \
+  val = tmp; \
+}
+
+    READ_UE_MAX_WARN (nr, vui->min_spatial_segmentation_idc, 4096);
+    READ_UE_MAX_WARN (nr, vui->max_bytes_per_pic_denom, 16);
+    READ_UE_MAX_WARN (nr, vui->max_bits_per_min_cu_denom, 16);
+    READ_UE_MAX_WARN (nr, vui->log2_max_mv_length_horizontal, 16);
+    READ_UE_MAX_WARN (nr, vui->log2_max_mv_length_vertical, 15);
   }
 
   vui->parsed = TRUE;

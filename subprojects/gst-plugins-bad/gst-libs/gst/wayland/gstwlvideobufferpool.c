@@ -22,10 +22,11 @@
 #include <config.h>
 #endif
 
+#include <drm_fourcc.h>
+
 #include "gstwlvideobufferpool.h"
 
 #include <gst/allocators/allocators.h>
-#include <drm_fourcc.h>
 
 GST_DEBUG_CATEGORY (gst_wl_videobufferpool_debug);
 #define GST_CAT_DEFAULT gst_wl_videobufferpool_debug

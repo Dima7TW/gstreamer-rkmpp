@@ -1,0 +1,10 @@
+--- gst-libs/gst/wayland/gstwllinuxdmabuf.c
++++ gst-libs/gst/wayland/gstwllinuxdmabuf.c
+@@ -63,7 +31,6 @@ gst_wl_linux_dmabuf_construct_wl_buffer (GstBuffer * buf,
+   GstVideoMeta *vmeta;
+   guint nplanes = 0, flags = 0;
+   struct zwp_linux_buffer_params_v1 *params;
+-  gint64 timeout;
+   ConstructBufferData data;
+ 
+   g_return_val_if_fail (gst_wl_display_check_format_for_dmabuf (display,
