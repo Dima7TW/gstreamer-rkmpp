@@ -1,11 +1,12 @@
 wl_req = '>= 1.15'
 wl_client_dep = dependency('wayland-client', version: wl_req, required: get_option('wayland'))
+wl_cursor_dep = dependency('wayland-cursor', version: wl_req, required: get_option('wayland'))
 libdrm_dep = dependency('libdrm', version: '>= 2.4.98', required: get_option('wayland'))
 wl_proto_req = '>= 1.44'
 wl_protocol_dep = dependency('wayland-protocols', version: wl_proto_req, required: get_option('wayland'))
 wl_scanner = find_program('wayland-scanner', required: get_option('wayland'))
 # Also used in ext/wayland
-use_wayland = wl_protocol_dep.found() and wl_client_dep.found() and wl_scanner.found() and libdrm_dep.found()
+use_wayland = wl_protocol_dep.found() and wl_client_dep.found() and wl_cursor_dep.found() and wl_scanner.found() and libdrm_dep.found()
 
 if use_wayland
   wl_sources = files([
@@ -109,7 +110,7 @@ if use_wayland
     darwin_versions : osxversion,
     install : true,
     dependencies : [gst_dep, gstallocators_dep, gstvideo_dep, libdrm_dep,
-                    wl_client_dep]
+                    wl_client_dep, wl_cursor_dep]
   )
 
   pkg_name = 'gstreamer-wayland-1.0'
@@ -125,7 +126,7 @@ if use_wayland
   gstwayland_dep = declare_dependency(link_with : gstwayland,
     include_directories : [libsinc],
     dependencies : [gst_dep, gstallocators_dep, gstvideo_dep, libdrm_dep,
-                    wl_client_dep])
+                    wl_client_dep, wl_cursor_dep])
 
   install_headers(wl_headers, subdir: 'gstreamer-1.0/gst/wayland')
   meson.override_dependency(pkg_name, gstwayland_dep)

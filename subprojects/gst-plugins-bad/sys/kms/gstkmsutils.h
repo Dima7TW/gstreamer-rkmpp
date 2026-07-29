@@ -30,6 +30,96 @@
 
 G_BEGIN_DECLS
 
+#ifndef DRM_FORMAT_NV12_10
+#define DRM_FORMAT_NV12_10 fourcc_code('N', 'A', '1', '2')
+#endif
+
+#ifndef DRM_FORMAT_NV15
+#define DRM_FORMAT_NV15 fourcc_code('N', 'V', '1', '5')
+#endif
+
+#ifndef DRM_FORMAT_NV20
+#define DRM_FORMAT_NV20 fourcc_code('N', 'V', '2', '0')
+#endif
+
+#ifndef DRM_FORMAT_YUV420_8BIT
+#define DRM_FORMAT_YUV420_8BIT fourcc_code('Y', 'U', '0', '8')
+#endif
+
+#ifndef DRM_FORMAT_YUV420_10BIT
+#define DRM_FORMAT_YUV420_10BIT fourcc_code('Y', 'U', '1', '0')
+#endif
+
+#ifndef DRM_FORMAT_MOD_VENDOR_ARM
+#define DRM_FORMAT_MOD_VENDOR_ARM 0x08
+#endif
+
+#ifndef DRM_FORMAT_MOD_ARM_AFBC
+#define DRM_FORMAT_MOD_ARM_AFBC(__afbc_mode) fourcc_mod_code(ARM, __afbc_mode)
+#endif
+
+#ifndef AFBC_FORMAT_MOD_BLOCK_SIZE_16x16
+#define AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 (1ULL)
+#endif
+
+#ifndef AFBC_FORMAT_MOD_SPARSE
+#define AFBC_FORMAT_MOD_SPARSE (((__u64)1) << 6)
+#endif
+
+#define DRM_AFBC_MODIFIER \
+  (DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_SPARSE) | \
+   DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16))
+
+#ifndef GST_VIDEO_FLAG_ARM_AFBC
+#define GST_VIDEO_FLAG_ARM_AFBC (1UL << 31)
+#define GST_VIDEO_INFO_SET_AFBC(i) \
+  GST_VIDEO_INFO_FLAG_SET (i, GST_VIDEO_FLAG_ARM_AFBC)
+#define GST_VIDEO_INFO_UNSET_AFBC(i) \
+  GST_VIDEO_INFO_FLAG_UNSET (i, GST_VIDEO_FLAG_ARM_AFBC)
+#define GST_VIDEO_INFO_IS_AFBC(i) \
+  GST_VIDEO_INFO_FLAG_IS_SET (i, GST_VIDEO_FLAG_ARM_AFBC)
+#endif
+
+#ifndef DRM_FORMAT_MOD_VENDOR_ROCKCHIP
+#define DRM_FORMAT_MOD_VENDOR_ROCKCHIP 0x0b
+#endif
+
+#ifndef DRM_FORMAT_MOD_ROCKCHIP_TYPE_SHIFT
+#define DRM_FORMAT_MOD_ROCKCHIP_TYPE_SHIFT  52
+#endif
+
+#ifndef DRM_FORMAT_MOD_ROCKCHIP_TYPE_RFBC
+#define DRM_FORMAT_MOD_ROCKCHIP_TYPE_RFBC 0x1
+#endif
+
+#ifndef ROCKCHIP_RFBC_BLOCK_SIZE_64x4
+#define ROCKCHIP_RFBC_BLOCK_SIZE_64x4   (1ULL)
+#endif
+
+#ifndef DRM_FORMAT_MOD_ROCKCHIP_CODE
+#define DRM_FORMAT_MOD_ROCKCHIP_CODE(__type, __val) \
+  fourcc_mod_code(ROCKCHIP, ((__u64)(__type) << DRM_FORMAT_MOD_ROCKCHIP_TYPE_SHIFT) | \
+      ((__val) & 0x000fffffffffffffULL))
+#endif
+
+#ifndef DRM_FORMAT_MOD_ROCKCHIP_RFBC
+#define DRM_FORMAT_MOD_ROCKCHIP_RFBC(mode) \
+  DRM_FORMAT_MOD_ROCKCHIP_CODE(DRM_FORMAT_MOD_ROCKCHIP_TYPE_RFBC, mode)
+#endif
+
+#define DRM_RFBC_MODIFIER \
+  DRM_FORMAT_MOD_ROCKCHIP_RFBC(ROCKCHIP_RFBC_BLOCK_SIZE_64x4)
+
+#ifndef GST_VIDEO_FLAG_RFBC
+#define GST_VIDEO_FLAG_RFBC (1UL << 30)
+#define GST_VIDEO_INFO_SET_RFBC(i) \
+  GST_VIDEO_INFO_FLAG_SET (i, GST_VIDEO_FLAG_RFBC)
+#define GST_VIDEO_INFO_UNSET_RFBC(i) \
+  GST_VIDEO_INFO_FLAG_UNSET (i, GST_VIDEO_FLAG_RFBC)
+#define GST_VIDEO_INFO_IS_RFBC(i) \
+  GST_VIDEO_INFO_FLAG_IS_SET (i, GST_VIDEO_FLAG_RFBC)
+#endif
+
 GstVideoFormat gst_video_format_from_drm (guint32 drmfmt);
 guint32        gst_drm_format_from_video (GstVideoFormat fmt);
 guint32        gst_drm_bpp_from_drm (guint32 drmfmt);

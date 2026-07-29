@@ -24,7 +24,11 @@
 #include <config.h>
 #endif
 
+#include <drm_fourcc.h>
+
 #include "gstwllinuxdmabuf.h"
+
+#include <gst/video/video-info-dma.h>
 
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 
@@ -46,40 +50,8 @@ gst_wl_linux_dmabuf_init_once (void)
 
 typedef struct
 {
-  GMutex lock;
-  GCond cond;
   struct wl_buffer *wbuf;
 } ConstructBufferData;
-
-static void
-create_succeeded (void *data, struct zwp_linux_buffer_params_v1 *params,
-    struct wl_buffer *new_buffer)
-{
-  ConstructBufferData *d = data;
-
-  g_mutex_lock (&d->lock);
-  d->wbuf = new_buffer;
-  zwp_linux_buffer_params_v1_destroy (params);
-  g_cond_signal (&d->cond);
-  g_mutex_unlock (&d->lock);
-}
-
-static void
-create_failed (void *data, struct zwp_linux_buffer_params_v1 *params)
-{
-  ConstructBufferData *d = data;
-
-  g_mutex_lock (&d->lock);
-  d->wbuf = NULL;
-  zwp_linux_buffer_params_v1_destroy (params);
-  g_cond_signal (&d->cond);
-  g_mutex_unlock (&d->lock);
-}
-
-static const struct zwp_linux_buffer_params_v1_listener params_listener = {
-  create_succeeded,
-  create_failed
-};
 
 static gint
 get_drm_stride (const GstVideoFormatInfo * finfo, const gint * strides,
@@ -108,20 +80,23 @@ gst_wl_linux_dmabuf_construct_wl_buffer (GstBuffer * buf,
   const gint *strides = NULL;
   GstVideoMeta *vmeta;
   guint nplanes = 0, flags = 0;
+  gfloat stride_scale = 1.0f;
   struct zwp_linux_buffer_params_v1 *params;
-  gint64 timeout;
   ConstructBufferData data = { 0 };
 
   g_return_val_if_fail (gst_wl_display_check_format_for_dmabuf (display,
-          drm_info), NULL);
+          drm_info->drm_fourcc, drm_info->drm_modifier), NULL);
 
   mem = gst_buffer_peek_memory (buf, 0);
   fourcc = drm_info->drm_fourcc;
   modifier = drm_info->drm_modifier;
 
-  g_cond_init (&data.cond);
-  g_mutex_init (&data.lock);
-  g_mutex_lock (&data.lock);
+  if (!gst_video_info_dma_drm_to_video_info (drm_info, &info)) {
+    GST_ERROR_OBJECT (display, "GstVideoMeta is needed to carry DMABuf using "
+        "'memory:DMABuf' caps feature.");
+    data.wbuf = NULL;
+    goto out;
+  }
 
   vmeta = gst_buffer_get_video_meta (buf);
   if (vmeta) {
@@ -131,23 +106,34 @@ gst_wl_linux_dmabuf_construct_wl_buffer (GstBuffer * buf,
     nplanes = vmeta->n_planes;
     offsets = vmeta->offset;
     strides = vmeta->stride;
-  } else if (gst_video_info_dma_drm_to_video_info (drm_info, &info)) {
+  } else {
     finfo = info.finfo;
     nplanes = GST_VIDEO_INFO_N_PLANES (&info);
     width = info.width;
     height = info.height;
     offsets = info.offset;
     strides = info.stride;
-  } else {
-    GST_ERROR_OBJECT (display, "GstVideoMeta is needed to carry DMABuf using "
-        "'memory:DMABuf' caps feature.");
-    goto out;
   }
 
   GST_DEBUG_OBJECT (display,
       "Creating wl_buffer from DMABuf of size %" G_GSSIZE_FORMAT
       " (%d x %d), DRM fourcc %" GST_FOURCC_FORMAT, gst_buffer_get_size (buf),
       width, height, GST_FOURCC_ARGS (fourcc));
+
+  if (nplanes != 1) {
+    /* HACK: Mali uses these formats instead */
+    switch (fourcc) {
+    case DRM_FORMAT_YUV420_8BIT:
+    case DRM_FORMAT_YUV420_10BIT:
+      nplanes = 1;
+      stride_scale = 1.5;
+      break;
+    case DRM_FORMAT_YUYV:
+      nplanes = 1;
+      stride_scale = 2;
+      break;
+    }
+  }
 
   /* Creation and configuration of planes  */
   params = zwp_linux_dmabuf_v1_create_params (gst_wl_display_get_dmabuf_v1
@@ -159,6 +145,7 @@ gst_wl_linux_dmabuf_construct_wl_buffer (GstBuffer * buf,
 
     offset = offsets[i];
     stride = get_drm_stride (finfo, strides, i);
+    stride *= stride_scale;
     if (gst_buffer_find_memory (buf, offset, 1, &mem_idx, &length, &skip)) {
       GstMemory *m = gst_buffer_peek_memory (buf, mem_idx);
       gint fd = gst_dmabuf_memory_get_fd (m);
@@ -183,21 +170,10 @@ gst_wl_linux_dmabuf_construct_wl_buffer (GstBuffer * buf,
     }
   }
 
-  /* Request buffer creation */
-  zwp_linux_buffer_params_v1_add_listener (params, &params_listener, &data);
-  zwp_linux_buffer_params_v1_create (params, width, height, fourcc, flags);
-
-  /* Wait for the request answer */
-  wl_display_flush (gst_wl_display_get_display (display));
-  data.wbuf = (gpointer) 0x1;
-  timeout = g_get_monotonic_time () + G_TIME_SPAN_SECOND;
-  while (data.wbuf == (gpointer) 0x1) {
-    if (!g_cond_wait_until (&data.cond, &data.lock, timeout)) {
-      GST_ERROR_OBJECT (mem->allocator, "zwp_linux_buffer_params_v1 time out");
-      zwp_linux_buffer_params_v1_destroy (params);
-      data.wbuf = NULL;
-    }
-  }
+  data.wbuf =
+      zwp_linux_buffer_params_v1_create_immed (params, width, height, fourcc,
+      flags);
+  zwp_linux_buffer_params_v1_destroy (params);
 
 out:
   if (!data.wbuf) {
@@ -207,10 +183,6 @@ out:
         "%dx%d, fmt=%" GST_FOURCC_FORMAT ", %d planes",
         data.wbuf, width, height, GST_FOURCC_ARGS (fourcc), nplanes);
   }
-
-  g_mutex_unlock (&data.lock);
-  g_mutex_clear (&data.lock);
-  g_cond_clear (&data.cond);
 
   return data.wbuf;
 }

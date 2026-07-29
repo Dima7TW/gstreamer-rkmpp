@@ -22,7 +22,10 @@
 #include <config.h>
 #endif
 
+#include <drm_fourcc.h>
+
 #include "gstwldisplay.h"
+#include "gstwlwindow.h"
 #include "gstwloutput-private.h"
 
 #include "color-management-v1-client-protocol.h"
@@ -34,7 +37,9 @@
 #include "xdg-shell-client-protocol.h"
 
 #include <errno.h>
-#include <drm_fourcc.h>
+#include <linux/input.h>
+
+#include <wayland-cursor.h>
 
 #define GST_CAT_DEFAULT gst_wl_display_debug
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
@@ -45,6 +50,13 @@ typedef struct _GstWlDisplayPrivate
   struct wl_display *display;
   struct wl_display *display_wrapper;
   struct wl_event_queue *queue;
+
+  struct wl_list input_list;
+
+  struct wl_cursor_theme *cursor_theme;
+  struct wl_cursor *default_cursor;
+  struct wl_surface *cursor_surface;
+  struct wl_surface *touch_surface;
 
   /* globals */
   struct wl_registry *registry;
@@ -92,7 +104,27 @@ G_DEFINE_TYPE_WITH_CODE (GstWlDisplay, gst_wl_display, G_TYPE_OBJECT,
         "wldisplay", 0, "wldisplay library");
     );
 
+void
+gst_wl_display_set_touch_surface (GstWlDisplay * self,
+    struct wl_surface *touch_surface)
+{
+  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+  priv->touch_surface = touch_surface;
+}
+
 static void gst_wl_display_finalize (GObject * gobject);
+
+struct input
+{
+  GstWlDisplay *display;
+  struct wl_seat *seat;
+  struct wl_pointer *pointer;
+  struct wl_touch *touch;
+
+  void *pointer_focus;
+
+  struct wl_list link;
+};
 
 static void
 gst_wl_display_class_init (GstWlDisplayClass * klass)
@@ -138,6 +170,30 @@ gst_wl_ref_wl_buffer (gpointer key, gpointer value, gpointer user_data)
 }
 
 static void
+input_destroy (struct input *input)
+{
+  if (input->touch)
+    wl_touch_destroy (input->touch);
+  if (input->pointer)
+    wl_pointer_destroy (input->pointer);
+
+  wl_list_remove (&input->link);
+  wl_seat_destroy (input->seat);
+  free (input);
+}
+
+static void
+display_destroy_inputs (GstWlDisplay * self)
+{
+  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+  struct input *tmp;
+  struct input *input;
+
+  wl_list_for_each_safe (input, tmp, &priv->input_list, link)
+      input_destroy (input);
+}
+
+static void
 gst_wl_display_finalize (GObject * gobject)
 {
   GstWlDisplay *self = GST_WL_DISPLAY (gobject);
@@ -146,6 +202,14 @@ gst_wl_display_finalize (GObject * gobject)
   gst_poll_set_flushing (priv->wl_fd_poll, TRUE);
   if (priv->thread)
     g_thread_join (priv->thread);
+
+  display_destroy_inputs (self);
+
+  if (priv->cursor_surface)
+    wl_surface_destroy (priv->cursor_surface);
+
+  if (priv->cursor_theme)
+    wl_cursor_theme_destroy (priv->cursor_theme);
 
   /* to avoid buffers being unregistered from another thread
    * at the same time, take their ownership */
@@ -248,6 +312,8 @@ dmabuf_modifier (void *data, struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf,
 {
   GstWlDisplay *self = data;
   guint64 modifier = (guint64) modifier_hi << 32 | modifier_lo;
+
+#if 0 // HACK: Allow all formats
   GstVideoFormat gst_format = gst_wl_dmabuf_format_to_video_format (format);
   static uint32_t last_format = 0;
 
@@ -277,6 +343,15 @@ dmabuf_modifier (void *data, struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf,
 
   g_array_append_val (priv->dmabuf_formats, format);
   g_array_append_val (priv->dmabuf_modifiers, modifier);
+#else
+  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+
+  if (modifier == DRM_FORMAT_MOD_INVALID)
+    modifier = DRM_FORMAT_MOD_LINEAR;
+
+  g_array_append_val (priv->dmabuf_formats, format);
+  g_array_append_val (priv->dmabuf_modifiers, modifier);
+#endif
 }
 
 static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
@@ -496,11 +571,9 @@ gst_wl_display_check_format_for_shm (GstWlDisplay * self,
 
 gboolean
 gst_wl_display_check_format_for_dmabuf (GstWlDisplay * self,
-    const GstVideoInfoDmaDrm * drm_info)
+    const guint fourcc, const guint64 modifier)
 {
   GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
-  guint64 modifier = drm_info->drm_modifier;
-  guint fourcc = drm_info->drm_fourcc;
   GArray *formats, *modifiers;
   guint i;
 
@@ -532,6 +605,222 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
 };
 
 static void
+display_set_cursor (GstWlDisplay *self, struct wl_pointer *pointer,
+    uint32_t serial)
+{
+  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+  struct wl_buffer *buffer;
+  struct wl_cursor_image *image;
+
+  if (!priv->default_cursor)
+    return;
+
+  if (!priv->cursor_surface) {
+      priv->cursor_surface =
+          wl_compositor_create_surface (priv->compositor);
+      if (!priv->cursor_surface)
+        return;
+  }
+
+  image = priv->default_cursor->images[0];
+  buffer = wl_cursor_image_get_buffer (image);
+  if (!buffer)
+    return;
+
+  wl_pointer_set_cursor (pointer, serial,
+      priv->cursor_surface, image->hotspot_x, image->hotspot_y);
+  wl_surface_attach (priv->cursor_surface, buffer, 0, 0);
+  wl_surface_damage (priv->cursor_surface, 0, 0,
+      image->width, image->height);
+  wl_surface_commit (priv->cursor_surface);
+}
+
+static void
+pointer_handle_enter (void *data, struct wl_pointer *pointer,
+    uint32_t serial, struct wl_surface *surface,
+    wl_fixed_t sx_w, wl_fixed_t sy_w)
+{
+  struct input *input = data;
+  GstWlDisplay *self = input->display;
+  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+  GstWlWindow *window;
+
+  if (!surface) {
+    /* enter event for a window we've just destroyed */
+    return;
+  }
+
+  if (surface != priv->touch_surface) {
+    /* Ignoring input event from other surfaces */
+    return;
+  }
+
+  window = wl_surface_get_user_data (surface);
+  if (!window || !gst_wl_window_is_toplevel (window)) {
+    /* Ignoring input event from subsurface */
+    return;
+  }
+
+  input->pointer_focus = window;
+  display_set_cursor (self, pointer, serial);
+}
+
+static void
+pointer_handle_leave (void *data, struct wl_pointer *pointer,
+    uint32_t serial, struct wl_surface *surface)
+{
+  struct input *input = data;
+
+  if (input->pointer_focus) {
+    input->pointer_focus = NULL;
+    wl_pointer_set_cursor (pointer, serial, NULL, 0, 0);
+  }
+}
+
+static void
+pointer_handle_motion (void *data, struct wl_pointer *pointer,
+    uint32_t time, wl_fixed_t sx, wl_fixed_t sy)
+{
+}
+
+static void
+pointer_handle_button (void *data, struct wl_pointer *pointer, uint32_t serial,
+    uint32_t time, uint32_t button, uint32_t state)
+{
+  struct input *input = data;
+  GstWlWindow *window;
+
+  window = input->pointer_focus;
+  if (!window)
+    return;
+
+  if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED)
+    gst_wl_window_toplevel_move (window, input->seat, serial);
+}
+
+static void
+pointer_handle_axis (void *data, struct wl_pointer *wl_pointer,
+    uint32_t time, uint32_t axis, wl_fixed_t value)
+{
+}
+
+static const struct wl_pointer_listener pointer_listener = {
+  pointer_handle_enter,
+  pointer_handle_leave,
+  pointer_handle_motion,
+  pointer_handle_button,
+  pointer_handle_axis,
+};
+
+static void
+touch_handle_down (void *data, struct wl_touch *wl_touch,
+    uint32_t serial, uint32_t time, struct wl_surface *surface,
+    int32_t id, wl_fixed_t x_w, wl_fixed_t y_w)
+{
+  struct input *input = data;
+  GstWlDisplay *self = input->display;
+  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+  GstWlWindow *window;
+
+  if (!surface) {
+    /* enter event for a window we've just destroyed */
+    return;
+  }
+
+  if (surface != priv->touch_surface) {
+    /* Ignoring input event from other surfaces */
+    return;
+  }
+
+  window = wl_surface_get_user_data (surface);
+  if (!window || !gst_wl_window_is_toplevel (window)) {
+    /* Ignoring input event from subsurface */
+    return;
+  }
+
+  gst_wl_window_toplevel_move (window, input->seat, serial);
+}
+
+static void
+touch_handle_up (void *data, struct wl_touch *wl_touch,
+    uint32_t serial, uint32_t time, int32_t id)
+{
+}
+
+static void
+touch_handle_motion (void *data, struct wl_touch *wl_touch,
+    uint32_t time, int32_t id, wl_fixed_t x_w, wl_fixed_t y_w)
+{
+}
+
+static void
+touch_handle_frame (void *data, struct wl_touch *wl_touch)
+{
+}
+
+static void
+touch_handle_cancel (void *data, struct wl_touch *wl_touch)
+{
+}
+
+static const struct wl_touch_listener touch_listener = {
+  touch_handle_down,
+  touch_handle_up,
+  touch_handle_motion,
+  touch_handle_frame,
+  touch_handle_cancel,
+};
+
+static void
+seat_handle_capabilities (void *data, struct wl_seat *seat,
+    enum wl_seat_capability caps)
+{
+  struct input *input = data;
+
+  if ((caps & WL_SEAT_CAPABILITY_POINTER) && !input->pointer) {
+    input->pointer = wl_seat_get_pointer (seat);
+    wl_pointer_add_listener (input->pointer, &pointer_listener, input);
+  } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && input->pointer) {
+    wl_pointer_destroy (input->pointer);
+    input->pointer = NULL;
+  }
+
+  if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !input->touch) {
+    input->touch = wl_seat_get_touch (seat);
+    wl_touch_add_listener (input->touch, &touch_listener, input);
+  } else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && input->touch) {
+    wl_touch_destroy (input->touch);
+    input->touch = NULL;
+  }
+}
+
+static const struct wl_seat_listener seat_listener = {
+  seat_handle_capabilities,
+};
+
+static void
+display_add_input (GstWlDisplay *self, uint32_t id)
+{
+  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+  struct input *input;
+
+  input = calloc (1, sizeof (*input));
+  if (input == NULL) {
+    GST_ERROR ("Error out of memory");
+    return;
+  }
+
+  input->display = self;
+
+  input->seat = wl_registry_bind (priv->registry, id, &wl_seat_interface, 1);
+
+  wl_seat_add_listener (input->seat, &seat_listener, input);
+  wl_seat_set_user_data (input->seat, input);
+
+  wl_list_insert (priv->input_list.prev, &input->link);
+}
+
+static void
 registry_handle_global (void *data, struct wl_registry *registry,
     uint32_t id, const char *interface, uint32_t version)
 {
@@ -554,6 +843,18 @@ registry_handle_global (void *data, struct wl_registry *registry,
   } else if (g_strcmp0 (interface, "wl_shm") == 0) {
     priv->shm = wl_registry_bind (registry, id, &wl_shm_interface, 1);
     wl_shm_add_listener (priv->shm, &shm_listener, self);
+
+    priv->cursor_theme = wl_cursor_theme_load (NULL, 32, priv->shm);
+    if (!priv->cursor_theme) {
+      GST_ERROR ("Error loading default cursor theme");
+    } else {
+      priv->default_cursor =
+          wl_cursor_theme_get_cursor (priv->cursor_theme, "left_ptr");
+      if (!priv->default_cursor)
+        GST_ERROR ("Error loading default left cursor pointer");
+    }
+  } else if (g_strcmp0 (interface, "wl_seat") == 0) {
+    display_add_input (self, id);
   } else if (g_strcmp0 (interface, "wp_viewporter") == 0) {
     priv->viewporter =
         wl_registry_bind (registry, id, &wp_viewporter_interface, 1);
@@ -696,6 +997,8 @@ gst_wl_display_new_existing (struct wl_display *display,
   priv->display = display;
   priv->display_wrapper = wl_proxy_create_wrapper (display);
   priv->own_display = take_ownership;
+
+  wl_list_init (&priv->input_list);
 
 #ifdef HAVE_WL_EVENT_QUEUE_NAME
   priv->queue = wl_display_create_queue_with_name (priv->display,

@@ -29,6 +29,8 @@
 #include <gst/video/gstvideosink.h>
 #include <gst/video/video-hdr.h>
 
+#include <linux/videodev2.h>
+
 G_BEGIN_DECLS
 
 #define GST_TYPE_KMS_SINK \
@@ -45,6 +47,14 @@ G_BEGIN_DECLS
 typedef struct _GstKMSSink GstKMSSink;
 typedef struct _GstKMSSinkClass GstKMSSinkClass;
 
+typedef enum
+{
+  GST_KMS_SYNC_AUTO = 0,
+  GST_KMS_SYNC_FLIP = 1,
+  GST_KMS_SYNC_VBLANK = 2,
+  GST_KMS_SYNC_NONE = 3,
+} GstKMSSyncMode;
+
 struct _GstKMSSink {
   GstVideoSink videosink;
 
@@ -53,7 +63,9 @@ struct _GstKMSSink {
   gint conn_id;
   gint crtc_id;
   gint plane_id;
+  gint primary_plane_id;
   guint pipe;
+  gint saved_zpos;
 
   /* crtc data */
   guint16 hdisplay, vdisplay;
@@ -66,6 +78,7 @@ struct _GstKMSSink {
   gboolean can_scale;
 
   gboolean modesetting_enabled;
+  gboolean mode_valid;
   gboolean restore_crtc;
   GstStructure *connector_props;
   GstStructure *plane_props;
@@ -100,14 +113,26 @@ struct _GstKMSSink {
   gboolean skip_vsync;
 
   /* HDR mastering related structure */
+  gboolean hdr_en;
+  gboolean required_cll;
   gboolean no_infoframe;
   gboolean has_hdr_info;
   gboolean has_sent_hdrif;
   guint32 edidPropID;
   guint32 hdrPropID;
+  guint32 connColorSpacePropID;
+  guint32 eotfPropID;
+  guint32 colorSpacePropID;
+  guint32 zposPropID;
   gchar colorimetry;
+  gchar colorspace;
   GstVideoMasteringDisplayInfo hdr_minfo;
   GstVideoContentLightLevel hdr_cll;
+
+  gboolean keep_aspect;
+  gboolean fullscreen;
+  gboolean force_ignore_aspect;
+  GstKMSSyncMode sync_mode;
 };
 
 struct _GstKMSSinkClass {

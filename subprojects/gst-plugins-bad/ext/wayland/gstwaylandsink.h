@@ -63,6 +63,10 @@ struct _GstWaylandSink
   gboolean fullscreen;
   gchar *fullscreen_output;
   GstCaps *caps;
+  GstWlWindowLayer layer;
+  gdouble alpha;
+
+  gboolean force_dmabuf;
 
   gchar *display_name;
 
@@ -70,6 +74,8 @@ struct _GstWaylandSink
    * OBJECT_LOCK must be taken first */
   GMutex render_lock;
   GstBuffer *last_buffer;
+
+  GstVideoRectangle render_rectangle;
 
   GstVideoOrientationMethod sink_rotate_method;
   GstVideoOrientationMethod tag_rotate_method;

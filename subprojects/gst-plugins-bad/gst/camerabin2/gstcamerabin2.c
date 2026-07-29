@@ -1509,6 +1509,19 @@ gst_camera_bin_create_elements (GstCameraBin2 * camera)
   gboolean profile_switched = FALSE;
   const gchar *missing_element_name;
   gint encbin_flags = 0;
+  const char *env;
+
+  if ((env = g_getenv ("CAMERABIN2_PREVIEW_FILTER")))
+    camera->preview_filter = gst_parse_launch (env, NULL);
+
+  if ((env = g_getenv ("CAMERABIN2_IMAGE_FILTER")))
+    camera->user_image_filter = gst_parse_launch (env, NULL);
+
+  if ((env = g_getenv ("CAMERABIN2_VIDEO_FILTER")))
+    camera->user_video_filter = gst_parse_launch (env, NULL);
+
+  if ((env = g_getenv ("CAMERABIN2_VIEWFINDER_FILTER")))
+    camera->user_viewfinder_filter = gst_parse_launch (env, NULL);
 
   if (!camera->elements_created) {
     /* Check that elements created in _init were really created */
@@ -1905,7 +1918,6 @@ gst_camera_bin_change_state (GstElement * element, GstStateChange trans)
 {
   GstStateChangeReturn ret = GST_STATE_CHANGE_SUCCESS;
   GstCameraBin2 *camera = GST_CAMERA_BIN2_CAST (element);
-
 
   switch (trans) {
     case GST_STATE_CHANGE_NULL_TO_READY:

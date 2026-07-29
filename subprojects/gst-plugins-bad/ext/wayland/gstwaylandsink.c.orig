@@ -42,14 +42,12 @@
 #include <config.h>
 #endif
 
-#include <drm_fourcc.h>
-
 #include "gstwaylandsink.h"
 
+#include <drm_fourcc.h>
 #include <gst/allocators/allocators.h>
 #include <gst/video/gstvideodmabufpool.h>
 #include <gst/video/videooverlay.h>
-#include <gst/video/video-info-dma.h>
 
 /* signals */
 enum
@@ -69,7 +67,6 @@ enum
   PROP_DRM_DEVICE,
   PROP_FORCE_ASPECT_RATIO,
   PROP_LAYER,
-  PROP_ALPHA,
   PROP_LAST
 };
 
@@ -116,7 +113,7 @@ static void gst_wayland_sink_expose (GstVideoOverlay * overlay);
 G_DEFINE_TYPE_WITH_CODE (GstWaylandSink, gst_wayland_sink, GST_TYPE_VIDEO_SINK,
     G_IMPLEMENT_INTERFACE (GST_TYPE_VIDEO_OVERLAY,
         gst_wayland_sink_videooverlay_init));
-GST_ELEMENT_REGISTER_DEFINE (waylandsink, "waylandsink", GST_RANK_PRIMARY,
+GST_ELEMENT_REGISTER_DEFINE (waylandsink, "waylandsink", GST_RANK_MARGINAL,
     GST_TYPE_WAYLAND_SINK);
 
 #define GST_TYPE_WL_WINDOW_LAYER (gst_wl_window_layer_get_type ())
@@ -239,11 +236,6 @@ gst_wayland_sink_class_init (GstWaylandSinkClass * klass)
           GST_TYPE_WL_WINDOW_LAYER, GST_WL_WINDOW_LAYER_NORMAL,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-  g_object_class_install_property (gobject_class, PROP_ALPHA,
-      g_param_spec_double ("alpha", "Window alpha",
-          "Wayland window alpha", 0.0, 1.0, 1.0,
-          G_PARAM_READWRITE | GST_PARAM_CONTROLLABLE | G_PARAM_STATIC_STRINGS));
-
  /**
   * waylandsink:render-rectangle:
   *
@@ -261,17 +253,10 @@ gst_wayland_sink_class_init (GstWaylandSinkClass * klass)
 static void
 gst_wayland_sink_init (GstWaylandSink * self)
 {
-  const gchar *env;
-
   g_mutex_init (&self->display_lock);
   g_mutex_init (&self->render_lock);
   self->force_aspect_ratio = TRUE;
   self->layer = GST_WL_WINDOW_LAYER_NORMAL;
-  self->alpha = 1.0;
-
-  env = g_getenv ("WAYLANDSINK_FORCE_DMABUF");
-  if (env && !strcmp (env, "1"))
-    self->force_dmabuf = TRUE;
 }
 
 /* must be called with the OBJECT_LOCK */
@@ -361,18 +346,6 @@ gst_wayland_sink_set_layer (GstWaylandSink * self, GstWlWindowLayer layer)
 }
 
 static void
-gst_wayland_sink_set_alpha (GstWaylandSink * self, gdouble alpha)
-{
-  if (alpha == self->alpha)
-    return;
-
-  g_mutex_lock (&self->render_lock);
-  self->alpha = alpha;
-  gst_wl_window_ensure_alpha (self->window, alpha);
-  g_mutex_unlock (&self->render_lock);
-}
-
-static void
 gst_wayland_sink_get_property (GObject * object,
     guint prop_id, GValue * value, GParamSpec * pspec)
 {
@@ -412,11 +385,6 @@ gst_wayland_sink_get_property (GObject * object,
     case PROP_LAYER:
       GST_OBJECT_LOCK (self);
       g_value_set_enum (value, self->layer);
-      GST_OBJECT_UNLOCK (self);
-      break;
-    case PROP_ALPHA:
-      GST_OBJECT_LOCK (self);
-      g_value_set_double (value, self->alpha);
       GST_OBJECT_UNLOCK (self);
       break;
     default:
@@ -469,11 +437,6 @@ gst_wayland_sink_set_property (GObject * object,
     case PROP_LAYER:
       GST_OBJECT_LOCK (self);
       gst_wayland_sink_set_layer (self, g_value_get_enum (value));
-      GST_OBJECT_UNLOCK (self);
-      break;
-    case PROP_ALPHA:
-      GST_OBJECT_LOCK (self);
-      gst_wayland_sink_set_alpha (self, g_value_get_double (value));
       GST_OBJECT_UNLOCK (self);
       break;
     default:
@@ -731,72 +694,6 @@ gst_wayland_sink_event (GstBaseSink * bsink, GstEvent * event)
 }
 
 static GstCaps *
-gst_wayland_sink_fixup_caps (GstWaylandSink * self, GstCaps * caps)
-{
-  GstCaps *tmp_caps = NULL;
-
-  if (gst_wl_display_check_format_for_dmabuf (self->display,
-          DRM_FORMAT_NV15, DRM_FORMAT_MOD_LINEAR)) {
-    tmp_caps = gst_caps_from_string (GST_VIDEO_CAPS_MAKE ("NV12_10LE40"));
-    if (!self->force_dmabuf)
-      gst_caps_set_features_simple (tmp_caps,
-          gst_caps_features_new_single (GST_CAPS_FEATURE_MEMORY_DMABUF));
-
-    if (gst_wl_display_check_format_for_dmabuf (self->display,
-            DRM_FORMAT_NV15, DRM_AFBC_MODIFIER)) {
-      gst_caps_ref (tmp_caps);
-      gst_caps_append (caps, tmp_caps);
-
-      gst_caps_set_simple (tmp_caps, "arm-afbc", G_TYPE_INT, 1, NULL);
-    }
-
-    gst_caps_append (caps, tmp_caps);
-  }
-
-  if (gst_wl_display_check_format_for_dmabuf (self->display,
-          DRM_FORMAT_NV20, DRM_FORMAT_MOD_LINEAR)) {
-    tmp_caps = gst_caps_from_string (GST_VIDEO_CAPS_MAKE ("NV16_10LE40"));
-    if (!self->force_dmabuf)
-      gst_caps_set_features_simple (tmp_caps,
-          gst_caps_features_new_single (GST_CAPS_FEATURE_MEMORY_DMABUF));
-
-    if (gst_wl_display_check_format_for_dmabuf (self->display,
-            DRM_FORMAT_NV20, DRM_AFBC_MODIFIER)) {
-      gst_caps_ref (tmp_caps);
-      gst_caps_append (caps, tmp_caps);
-
-      gst_caps_set_simple (tmp_caps, "arm-afbc", G_TYPE_INT, 1, NULL);
-    }
-
-    gst_caps_append (caps, tmp_caps);
-  }
-
-  if (gst_wl_display_check_format_for_dmabuf (self->display,
-          DRM_FORMAT_NV12, DRM_AFBC_MODIFIER)) {
-    tmp_caps = gst_caps_from_string (GST_VIDEO_CAPS_MAKE ("NV12"));
-    if (!self->force_dmabuf)
-      gst_caps_set_features_simple (tmp_caps,
-          gst_caps_features_new_single (GST_CAPS_FEATURE_MEMORY_DMABUF));
-
-    gst_caps_set_simple (tmp_caps, "arm-afbc", G_TYPE_INT, 1, NULL);
-    gst_caps_append (caps, tmp_caps);
-  }
-
-  if (gst_wl_display_check_format_for_dmabuf (self->display,
-        DRM_FORMAT_NV16, DRM_AFBC_MODIFIER)) {
-    tmp_caps = gst_caps_from_string (GST_VIDEO_CAPS_MAKE ("NV16"));
-    if (!self->force_dmabuf)
-      gst_caps_set_features_simple (tmp_caps,
-          gst_caps_features_new_single (GST_CAPS_FEATURE_MEMORY_DMABUF));
-
-    gst_caps_set_simple (tmp_caps, "arm-afbc", G_TYPE_INT, 1, NULL);
-    gst_caps_append (caps, tmp_caps);
-  }
-
-  return caps;
-}
-
-static GstCaps *
 gst_wayland_sink_get_caps (GstBaseSink * bsink, GstCaps * filter)
 {
   GstWaylandSink *self = GST_WAYLAND_SINK (bsink);;
@@ -823,8 +720,6 @@ gst_wayland_sink_get_caps (GstBaseSink * bsink, GstCaps * filter)
     gst_wl_display_fill_shm_format_list (self->display, &format_list);
     gst_structure_take_value (gst_caps_get_structure (caps, 1), "format",
         &format_list);
-
-    caps = gst_wayland_sink_fixup_caps (self, caps);
 
     GST_DEBUG_OBJECT (self, "display caps: %" GST_PTR_FORMAT, caps);
   }
@@ -931,8 +826,6 @@ gst_wayland_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
 {
   GstWaylandSink *self = GST_WAYLAND_SINK (bsink);;
   gboolean use_dmabuf;
-  GstStructure *s;
-  gint value;
 
   GST_INFO_OBJECT (self, "set caps %" GST_PTR_FORMAT, caps);
 
@@ -953,32 +846,12 @@ gst_wayland_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
       gst_video_info_dma_drm_init (&self->drm_info);
   }
 
-  /* HACK: parse AFBC from caps */
-  s = gst_caps_get_structure (caps, 0);
-  if (gst_structure_get_int (s, "arm-afbc", &value) && value) {
-    self->drm_info.drm_modifier = DRM_AFBC_MODIFIER;
-
-    /* HACK: Mali uses these formats instead */
-    switch (self->drm_info.drm_fourcc) {
-    case DRM_FORMAT_NV12:
-      self->drm_info.drm_fourcc = DRM_FORMAT_YUV420_8BIT;
-      break;
-    case DRM_FORMAT_NV15:
-      self->drm_info.drm_fourcc = DRM_FORMAT_YUV420_10BIT;
-      break;
-    case DRM_FORMAT_NV16:
-      self->drm_info.drm_fourcc = DRM_FORMAT_YUYV;
-      break;
-    }
-  }
-
   self->have_mastering_info =
       gst_video_mastering_display_info_from_caps (&self->minfo, caps);
   self->have_light_info =
       gst_video_content_light_level_from_caps (&self->linfo, caps);
 
   self->render_info_changed = TRUE;
-
   self->skip_dumb_buffer_copy = FALSE;
 
   /* free pooled buffer used with previous caps */
@@ -990,13 +863,10 @@ gst_wayland_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
   use_dmabuf = gst_caps_features_contains (gst_caps_get_features (caps, 0),
       GST_CAPS_FEATURE_MEMORY_DMABUF);
 
-  if (self->force_dmabuf)
-    use_dmabuf = TRUE;
-
   /* validate the format base on the memory type. */
   if (use_dmabuf) {
     if (!gst_wl_display_check_format_for_dmabuf (self->display,
-            self->drm_info.drm_fourcc, self->drm_info.drm_modifier))
+            &self->drm_info))
       goto unsupported_drm_format;
   } else if (!gst_wl_display_check_format_for_shm (self->display,
           &self->render_info)) {
@@ -1043,19 +913,11 @@ gst_wayland_sink_propose_allocation (GstBaseSink * bsink, GstQuery * query)
   GstBufferPool *pool = NULL;
   gboolean need_pool;
   guint size;
-  GstStructure *s;
-  gint value;
 
   gst_query_parse_allocation (query, &caps, &need_pool);
 
   if (caps == NULL)
     return FALSE;
-
-  s = gst_caps_get_structure (caps, 0);
-  if (gst_structure_get_int (s, "arm-afbc", &value) && value) {
-    GST_DEBUG_OBJECT (bsink, "no allocation for AFBC");
-    return FALSE;
-  }
 
   if (gst_video_is_dma_drm_caps (caps)) {
     GstVideoInfoDmaDrm drm_info;
@@ -1223,7 +1085,6 @@ gst_wayland_sink_show_frame (GstVideoSink * vsink, GstBuffer * buffer)
           self->current_rotate_method);
       gst_wl_window_set_force_aspect_ratio (self->window,
           self->force_aspect_ratio);
-      gst_wl_window_ensure_alpha (self->window, self->alpha);
     }
   }
 
@@ -1278,8 +1139,7 @@ gst_wayland_sink_show_frame (GstVideoSink * vsink, GstBuffer * buffer)
       "buffer %" GST_PTR_FORMAT " does not have a wl_buffer from our "
       "display, creating it", buffer);
 
-  if (gst_wl_display_check_format_for_dmabuf (self->display,
-          self->drm_info.drm_fourcc, self->drm_info.drm_modifier)) {
+  if (gst_wl_display_check_format_for_dmabuf (self->display, &self->drm_info)) {
     guint i, nb_dmabuf = 0;
 
     for (i = 0; i < gst_buffer_n_memory (buffer); i++)
@@ -1332,9 +1192,6 @@ gst_wayland_sink_show_frame (GstVideoSink * vsink, GstBuffer * buffer)
   }
 
 handle_shm:
-  if (!wbuf && self->drm_info.drm_modifier != DRM_FORMAT_MOD_LINEAR)
-    goto no_modifier;
-
   if (!wbuf && gst_wl_display_check_format_for_shm (self->display,
           &self->render_info)) {
     if (gst_buffer_n_memory (buffer) == 1 && gst_is_fd_memory (mem))
@@ -1437,12 +1294,6 @@ no_wl_buffer:
     ret = GST_FLOW_ERROR;
     goto done;
   }
-no_modifier:
-  {
-    GST_ERROR_OBJECT (self, "could not import buffer with modifier");
-    ret = GST_FLOW_ERROR;
-    goto done;
-  }
 activate_failed:
   {
     GST_ELEMENT_ERROR (self, RESOURCE, FAILED,
@@ -1508,7 +1359,6 @@ gst_wayland_sink_set_window_handle (GstVideoOverlay * overlay, guintptr handle)
             self->current_rotate_method);
         gst_wl_window_set_force_aspect_ratio (self->window,
             self->force_aspect_ratio);
-        gst_wl_window_ensure_alpha (self->window, self->alpha);
       }
     } else {
       GST_ERROR_OBJECT (self, "Failed to find display handle, "

@@ -273,7 +273,7 @@ widget_size_allocate_cb (GtkWidget * widget, GtkAllocation * allocation,
   GST_DEBUG_OBJECT (self, "window geometry changed to (%d, %d) %d x %d",
       allocation->x, allocation->y, allocation->width, allocation->height);
   gst_wl_window_set_render_rectangle (priv->wl_window, allocation->x,
-      allocation->y, allocation->width, allocation->height);
+      allocation->y, allocation->width, allocation->height, FALSE);
 
   g_mutex_unlock (&priv->render_lock);
 
@@ -464,7 +464,7 @@ scrollable_window_adjustment_changed_cb (GtkAdjustment * adjustment,
   gtk_widget_get_allocation (priv->gtk_widget, &allocation);
   calculate_adjustment (priv->gtk_widget, &allocation);
   gst_wl_window_set_render_rectangle (priv->wl_window, allocation.x,
-      allocation.y, allocation.width, allocation.height);
+      allocation.y, allocation.width, allocation.height, FALSE);
 
   return FALSE;
 }
@@ -533,7 +533,7 @@ setup_wl_window (GstGtkWaylandSink * self)
   gtk_widget_get_allocation (priv->gtk_widget, &allocation);
   calculate_adjustment (priv->gtk_widget, &allocation);
   gst_wl_window_set_render_rectangle (priv->wl_window, allocation.x,
-      allocation.y, allocation.width, allocation.height);
+      allocation.y, allocation.width, allocation.height, FALSE);
 
   /* Make subsurfaces syncronous during resizes.
    * Unfortunately GTK/GDK does not provide easier to use signals.
@@ -964,7 +964,7 @@ gst_gtk_wayland_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
   /* validate the format base on the memory type. */
   if (use_dmabuf) {
     if (!gst_wl_display_check_format_for_dmabuf (priv->display,
-            &priv->drm_info))
+            priv->drm_info.drm_fourcc, priv->drm_info.drm_modifier))
       goto unsupported_drm_format;
   } else if (!gst_wl_display_check_format_for_shm (priv->display,
           &priv->render_info)) {
@@ -1246,7 +1246,8 @@ gst_gtk_wayland_sink_show_frame (GstVideoSink * vsink, GstBuffer * buffer)
       "buffer %" GST_PTR_FORMAT " does not have a wl_buffer from our "
       "display, creating it", buffer);
 
-  if (gst_wl_display_check_format_for_dmabuf (priv->display, &priv->drm_info)) {
+  if (gst_wl_display_check_format_for_dmabuf (priv->display,
+      priv->drm_info.drm_fourcc, priv->drm_info.drm_modifier)) {
     guint i, nb_dmabuf = 0;
 
     for (i = 0; i < gst_buffer_n_memory (buffer); i++)

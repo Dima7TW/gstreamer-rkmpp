@@ -24,6 +24,9 @@
 #include <config.h>
 #endif
 
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "gstwlwindow.h"
 
 #include "color-management-v1-client-protocol.h"
@@ -97,6 +100,9 @@ typedef struct _GstWlWindowPrivate
   gboolean clear_window;
   struct wl_callback *frame_callback;
   struct wl_callback *commit_callback;
+
+  gboolean video_opaque;
+  gboolean area_opaque;
 } GstWlWindowPrivate;
 
 G_DEFINE_TYPE_WITH_CODE (GstWlWindow, gst_wl_window, G_TYPE_OBJECT,
@@ -127,6 +133,19 @@ static void gst_wl_window_set_colorimetry (GstWlWindow * self,
     const GstVideoColorimetry * colorimetry,
     const GstVideoMasteringDisplayInfo * minfo,
     const GstVideoContentLightLevel * linfo);
+
+void
+gst_wl_window_toplevel_move (GstWlWindow * self,
+    struct wl_seat *seat, uint32_t serial)
+{
+  GstWlWindowPrivate *priv;
+
+  if (!gst_wl_window_is_toplevel (self))
+    return;
+
+  priv = gst_wl_window_get_instance_private (self);
+  xdg_toplevel_move (priv->xdg_toplevel, seat, serial);
+}
 
 static void
 handle_xdg_toplevel_close (void *data, struct xdg_toplevel *xdg_toplevel)
@@ -172,7 +191,7 @@ handle_xdg_toplevel_configure (void *data, struct xdg_toplevel *xdg_toplevel,
 
   g_mutex_lock (&priv->configure_mutex);
   priv->configured = FALSE;
-  gst_wl_window_set_render_rectangle (self, 0, 0, width, height);
+  gst_wl_window_set_render_rectangle (self, 0, 0, width, height, FALSE);
   g_mutex_unlock (&priv->configure_mutex);
 }
 
@@ -294,6 +313,8 @@ gst_wl_window_new_internal (GstWlDisplay * display, GMutex * render_lock)
   priv->area_surface = wl_compositor_create_surface (compositor);
   priv->video_surface = wl_compositor_create_surface (compositor);
 
+  gst_wl_display_set_touch_surface (display, priv->area_surface);
+
   priv->area_surface_wrapper = wl_proxy_create_wrapper (priv->area_surface);
   priv->video_surface_wrapper = wl_proxy_create_wrapper (priv->video_surface);
 
@@ -325,6 +346,52 @@ gst_wl_window_new_internal (GstWlDisplay * display, GMutex * render_lock)
   return self;
 }
 
+static void
+gst_wl_window_set_config (GstWlWindow * self, const char *config)
+{
+  GstWlWindowPrivate *priv;
+
+  /* TODO: support non-toplevel */
+  if (!self || !gst_wl_window_is_toplevel (self))
+    return;
+
+  priv = gst_wl_window_get_instance_private (self);
+
+  /* HACK: set window config through title */
+  xdg_toplevel_set_title (priv->xdg_toplevel, config);
+}
+
+void
+gst_wl_window_ensure_alpha (GstWlWindow * window, gdouble alpha)
+{
+  char s[128];
+
+  snprintf (s, sizeof (s), "attrs=alpha:%f;", alpha);
+  gst_wl_window_set_config (window, s);
+}
+
+void
+gst_wl_window_ensure_layer (GstWlWindow * self, GstWlWindowLayer layer)
+{
+  char s[128] = "flags=";
+
+  switch (layer) {
+    case GST_WL_WINDOW_LAYER_TOP:
+      strcat (s, "stay-on-top|-stay-on-bottom");
+      break;
+    case GST_WL_WINDOW_LAYER_NORMAL:
+      strcat (s, "-stay-on-top|-stay-on-bottom");
+      break;
+    case GST_WL_WINDOW_LAYER_BOTTOM:
+      strcat (s, "-stay-on-top|stay-on-bottom");
+      break;
+    default:
+      return;
+  }
+
+  gst_wl_window_set_config (self, s);
+}
+
 /**
  * gst_wl_window_ensure_fullscreen_for_output:
  * @self: A #GstWlWindow
@@ -345,7 +412,9 @@ gst_wl_window_ensure_fullscreen_for_output (GstWlWindow * self,
   GstWlOutput *output = NULL;
   struct wl_output *wl_output = NULL;
 
-  g_return_if_fail (self);
+  if (!self)
+    return;
+
   priv = gst_wl_window_get_instance_private (self);
 
   if (!fullscreen) {
@@ -387,7 +456,8 @@ gst_wl_window_ensure_fullscreen (GstWlWindow * self, gboolean fullscreen)
 GstWlWindow *
 gst_wl_window_new_toplevel_full (GstWlDisplay * display,
     const GstVideoInfo * info, gboolean fullscreen, const gchar * output_name,
-    GMutex * render_lock)
+    GstWlWindowLayer layer, GMutex * render_lock,
+    GstVideoRectangle * render_rectangle)
 {
   GstWlWindow *self;
   GstWlWindowPrivate *priv;
@@ -396,6 +466,8 @@ gst_wl_window_new_toplevel_full (GstWlDisplay * display,
 
   self = gst_wl_window_new_internal (display, render_lock);
   priv = gst_wl_window_get_instance_private (self);
+
+  wl_surface_set_user_data (priv->area_surface, self);
 
   xdg_wm_base = gst_wl_display_get_xdg_wm_base (display);
   fullscreen_shell = gst_wl_display_get_fullscreen_shell_v1 (display);
@@ -428,19 +500,28 @@ gst_wl_window_new_toplevel_full (GstWlDisplay * display,
     }
 
     gst_wl_window_ensure_fullscreen_for_output (self, fullscreen, output_name);
+    gst_wl_window_ensure_layer (self, layer);
 
     /* Finally, commit the xdg_surface state as toplevel */
     priv->configured = FALSE;
 
-    /* set the initial size to be the same as the reported video size */
-    priv->default_width =
-        gst_util_uint64_scale_int_round (info->width, info->par_n, info->par_d);
-    priv->default_height = info->height;
-    gst_wl_window_set_render_rectangle (self, 0, 0, priv->default_width,
-        priv->default_height);
+    if (!fullscreen && (render_rectangle->w || render_rectangle->h)) {
+      /* apply cached position and size */
+      GST_DEBUG ("Applying window position (%d, %d)",
+          render_rectangle->x, render_rectangle->y);
+      gst_wl_window_set_render_rectangle (self, render_rectangle->x,
+          render_rectangle->y, render_rectangle->w, render_rectangle->h, TRUE);
+    } else {
+      /* set the initial size to be the same as the reported video size */
+      priv->default_width =
+          gst_util_uint64_scale_int_round (info->width, info->par_n, info->par_d);
+      priv->default_height = info->height;
+      gst_wl_window_set_render_rectangle (self, 0, 0, priv->default_width,
+          priv->default_height, FALSE);
 
-    GST_INFO_OBJECT (self, "Configured default rectangle to %ix%i",
-        priv->default_width, priv->default_height);
+      GST_INFO_OBJECT (self, "Configured default rectangle to %ix%i",
+          priv->default_width, priv->default_height);
+    }
 
     wl_surface_commit (priv->area_surface);
     wl_display_flush (gst_wl_display_get_display (display));
@@ -486,10 +567,11 @@ error:
 
 GstWlWindow *
 gst_wl_window_new_toplevel (GstWlDisplay * display, const GstVideoInfo * info,
-    gboolean fullscreen, GMutex * render_lock)
+    gboolean fullscreen, GstWlWindowLayer layer, GMutex * render_lock,
+    GstVideoRectangle * render_rectangle)
 {
   return gst_wl_window_new_toplevel_full (display, info, fullscreen, NULL,
-      render_lock);
+      layer, render_lock, render_rectangle);
 }
 
 GstWlWindow *
@@ -514,6 +596,11 @@ gst_wl_window_new_in_surface (GstWlDisplay * display,
       wl_subcompositor_get_subsurface (gst_wl_display_get_subcompositor
       (display), priv->area_surface, parent);
   wl_subsurface_set_desync (priv->area_subsurface);
+
+  if (g_getenv ("WAYLANDSINK_PLACE_ABOVE"))
+    wl_subsurface_place_above (priv->area_subsurface, parent);
+  else
+    wl_subsurface_place_below (priv->area_subsurface, parent);
 
   wl_surface_commit (parent);
 
@@ -668,20 +755,23 @@ gst_wl_window_resize_video_surface (GstWlWindow * self)
 }
 
 static void
-gst_wl_window_set_opaque (GstWlWindow * self, const GstVideoInfo * info)
+gst_wl_window_set_opaque (GstWlWindow * self)
 {
   GstWlWindowPrivate *priv = gst_wl_window_get_instance_private (self);
   struct wl_compositor *compositor;
   struct wl_region *region;
 
-  /* Set area opaque */
   compositor = gst_wl_display_get_compositor (priv->display);
-  region = wl_compositor_create_region (compositor);
-  wl_region_add (region, 0, 0, G_MAXINT32, G_MAXINT32);
-  wl_surface_set_opaque_region (priv->area_surface, region);
-  wl_region_destroy (region);
 
-  if (!GST_VIDEO_INFO_HAS_ALPHA (info)) {
+  if (priv->area_opaque) {
+    /* Set area opaque */
+    region = wl_compositor_create_region (compositor);
+    wl_region_add (region, 0, 0, G_MAXINT32, G_MAXINT32);
+    wl_surface_set_opaque_region (priv->area_surface, region);
+    wl_region_destroy (region);
+  }
+
+  if (priv->video_opaque) {
     /* Set video opaque */
     region = wl_compositor_create_region (compositor);
     wl_region_add (region, 0, 0, G_MAXINT32, G_MAXINT32);
@@ -780,9 +870,15 @@ gst_wl_window_commit_buffer (GstWlWindow * self, GstWlBuffer * buffer)
   }
 
   if (G_UNLIKELY (needs_layout_update)) {
+    priv->video_opaque = !GST_VIDEO_INFO_HAS_ALPHA (info);
+    priv->area_opaque = priv->video_opaque;
+
+    if (g_getenv ("WAYLANDSINK_FORCE_OPAQUE"))
+      priv->area_opaque = priv->video_opaque = TRUE;
+
     wl_subsurface_set_sync (priv->video_subsurface);
     gst_wl_window_resize_video_surface (self);
-    gst_wl_window_set_opaque (self, info);
+    gst_wl_window_set_opaque (self);
 
     gst_wl_window_set_colorimetry (self, &info->colorimetry, minfo, linfo);
   }
@@ -971,14 +1067,20 @@ gst_wl_window_update_borders (GstWlWindow * self)
     buf = gst_buffer_new_allocate (NULL, 1, NULL);
     wlbuf =
         wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer (single_pixel,
-        0, 0, 0, 0xffffffffU);
+        0, 0, 0, priv->area_opaque ? 0xffffffffU : 0);
   } else {
     GstVideoFormat format;
     GstVideoInfo info;
     GstAllocator *alloc;
 
-    /* we want WL_SHM_FORMAT_XRGB8888 */
-    format = GST_VIDEO_FORMAT_BGRx;
+    if (priv->area_opaque) {
+      /* we want WL_SHM_FORMAT_XRGB8888 */
+      format = GST_VIDEO_FORMAT_BGRx;
+    } else {
+      /* we want WL_SHM_FORMAT_ARGB8888 */
+      format = GST_VIDEO_FORMAT_BGRA;
+    }
+
     gst_video_info_set_format (&info, format, width, height);
     alloc = gst_shm_allocator_get ();
 
@@ -1033,7 +1135,7 @@ gst_wl_window_update_geometry (GstWlWindow * self)
 
 void
 gst_wl_window_set_render_rectangle (GstWlWindow * self, gint x, gint y,
-    gint w, gint h)
+    gint w, gint h, gboolean with_position)
 {
   GstWlWindowPrivate *priv = gst_wl_window_get_instance_private (self);
 
@@ -1047,6 +1149,10 @@ gst_wl_window_set_render_rectangle (GstWlWindow * self, gint x, gint y,
   priv->render_rectangle.h = h;
 
   gst_wl_window_update_geometry (self);
+
+  /* try to position the xdg surface with hacked wayland server API */
+  if (with_position && priv->xdg_surface)
+    xdg_surface_set_window_geometry (priv->xdg_surface, x, y, 0, 0);
 }
 
 const GstVideoRectangle *
