@@ -348,6 +348,19 @@ gst_video_info_dma_drm_from_video_info (GstVideoInfoDmaDrm * drm_info,
   if (fourcc == DRM_FORMAT_INVALID)
     return FALSE;
 
+  if (GST_VIDEO_INFO_IS_AFBC (info)) {
+    /* Mali uses these formats instead */
+    if (format == GST_VIDEO_FORMAT_NV12)
+      fourcc = DRM_FORMAT_YUV420_8BIT;
+    else if (format == GST_VIDEO_FORMAT_NV12_10LE40)
+      fourcc = DRM_FORMAT_YUV420_10BIT;
+    else if (format == GST_VIDEO_FORMAT_NV16)
+      fourcc = DRM_FORMAT_YUYV;
+
+    GST_INFO ("unsupported format for AFBC");
+    return FALSE;
+  }
+
   drm_info->vinfo = *info;
   drm_info->drm_fourcc = fourcc;
   drm_info->drm_modifier = modifier;

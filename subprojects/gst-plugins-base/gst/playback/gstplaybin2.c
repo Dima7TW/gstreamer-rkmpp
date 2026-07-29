@@ -199,6 +199,7 @@
 #include "config.h"
 #endif
 
+#include <stdlib.h>
 #include <string.h>
 #include <gst/gst.h>
 
@@ -314,6 +315,9 @@ struct _GstSourceGroup
   GstElement *video_sink;
   GstElement *text_sink;
 
+  /* Avoid multiple about to finish handling */
+  gboolean pending_about_to_finish;
+
   /* uridecodebins for uri and subtitle uri */
   GstElement *uridecodebin;
   GstElement *suburidecodebin;
@@ -329,6 +333,7 @@ struct _GstSourceGroup
   gulong notify_source_id;
   gulong source_setup_id;
   gulong drained_id;
+  gulong wait_on_eos_id;
   gulong autoplug_factories_id;
   gulong autoplug_select_id;
   gulong autoplug_continue_id;
@@ -380,6 +385,11 @@ G_STMT_START {                                          \
 #define GST_PLAY_BIN_SHUTDOWN_UNLOCK(bin)         \
   GST_PLAY_BIN_DYN_UNLOCK (bin);                  \
 
+/* lock to protect drain callbacks */
+#define GST_PLAY_BIN_DRAIN_LOCK(bin)    g_mutex_lock (&(bin)->drain_lock)
+#define GST_PLAY_BIN_DRAIN_TRYLOCK(bin)    g_mutex_trylock (&(bin)->drain_lock)
+#define GST_PLAY_BIN_DRAIN_UNLOCK(bin)  g_mutex_unlock (&(bin)->drain_lock)
+
 /**
  * GstPlayBin:
  *
@@ -422,6 +432,9 @@ struct _GstPlayBin
   gint shutdown;
   gboolean async_pending;       /* async-start has been emitted */
 
+  /* lock protecting draining */
+  GMutex drain_lock;
+
   GMutex elements_lock;
   guint32 elements_cookie;
   GList *elements;              /* factories we can use for selecting elements */
@@ -463,6 +476,9 @@ struct _GstPlayBin
   GList *contexts;
 
   gboolean is_live;
+
+  const gchar *apreferred;
+  const gchar *vpreferred;
 };
 
 struct _GstPlayBinClass
@@ -1534,6 +1550,7 @@ gst_play_bin_init (GstPlayBin * playbin)
 {
   g_rec_mutex_init (&playbin->lock);
   g_mutex_init (&playbin->dyn_lock);
+  g_mutex_init (&playbin->drain_lock);
 
   /* assume we can create an input-selector */
   playbin->have_selector = TRUE;
@@ -1573,6 +1590,9 @@ gst_play_bin_init (GstPlayBin * playbin)
 
   playbin->multiview_mode = GST_VIDEO_MULTIVIEW_FRAME_PACKING_NONE;
   playbin->multiview_flags = GST_VIDEO_MULTIVIEW_FLAGS_NONE;
+
+  playbin->apreferred = g_getenv ("PLAYBIN2_PREFERRED_AUDIOSINK");
+  playbin->vpreferred = g_getenv ("PLAYBIN2_PREFERRED_VIDEOSINK");
 }
 
 static void
@@ -1630,6 +1650,7 @@ gst_play_bin_finalize (GObject * object)
   g_list_free_full (playbin->contexts, (GDestroyNotify) gst_context_unref);
 
   g_rec_mutex_clear (&playbin->lock);
+  g_mutex_clear (&playbin->drain_lock);
   g_mutex_clear (&playbin->dyn_lock);
   g_mutex_clear (&playbin->elements_lock);
 
@@ -3129,7 +3150,14 @@ combiner_active_pad_changed (GObject * combiner, GParamSpec * pspec,
   GstSourceCombine *combine = NULL;
   int i;
 
+  /* We got a pad-change after draining; no need to notify */
+  if (!GST_PLAY_BIN_DRAIN_TRYLOCK (playbin))
+    return;
+
   GST_PLAY_BIN_LOCK (playbin);
+
+  GST_PLAY_BIN_DRAIN_UNLOCK (playbin);
+
   group = get_group (playbin);
 
   for (i = 0; i < PLAYBIN_STREAM_LAST; i++) {
@@ -3936,13 +3964,48 @@ drained_cb (GstElement * decodebin, GstSourceGroup * group)
 
   GST_DEBUG_OBJECT (playbin, "about to finish in group %p", group);
 
+  if (group->pending_about_to_finish) {
+    GST_DEBUG_OBJECT (playbin,
+        "Pending about to finish for group uri %s, do not handle.", group->uri);
+    return;
+  }
+
   /* after this call, we should have a next group to activate or we EOS */
   g_signal_emit (G_OBJECT (playbin),
       gst_play_bin_signals[SIGNAL_ABOUT_TO_FINISH], 0, NULL);
 
   /* now activate the next group. If the app did not set a uri, this will
    * fail and we can do EOS */
+
+  GST_PLAY_BIN_DRAIN_LOCK (playbin);
   setup_next_source (playbin, GST_STATE_PAUSED);
+  GST_PLAY_BIN_DRAIN_UNLOCK (playbin);
+
+  group->pending_about_to_finish = TRUE;
+}
+
+static gboolean
+wait_on_eos_cb (GstElement * decodebin, guint eos_received,
+    GstSourceGroup * group)
+{
+  GstPlayBin *playbin = group->playbin;
+  int i;
+  guint active_pads = 0;
+
+  for (i = 0; i < PLAYBIN_STREAM_LAST; i++) {
+    GstSourceCombine *combine = &group->combiner[i];
+    if (combine->has_active_pad)
+      active_pads++;
+  }
+
+  GST_DEBUG_OBJECT (playbin,
+      "%d eos received in group with uri %s, active pads %d", eos_received,
+      group->uri, active_pads);
+
+  if (eos_received < active_pads)
+    return TRUE;
+
+  return FALSE;
 }
 
 /* Like gst_element_factory_can_sink_any_caps() but doesn't
@@ -4669,6 +4732,7 @@ autoplug_select_cb (GstElement * decodebin, GstPad * pad,
   GSequence *ave_seq = NULL;
   GSequenceIter *seq_iter;
   gboolean created_sink = FALSE;
+  const gchar *preferred = NULL;
 
   playbin = group->playbin;
 
@@ -4729,6 +4793,29 @@ autoplug_select_cb (GstElement * decodebin, GstPad * pad,
       ave_list = g_list_sort (ave_list, (GCompareFunc) avelement_compare);
     } else {
       ave_list = g_list_prepend (ave_list, NULL);
+    }
+
+    if (isaudiodec)
+      preferred = playbin->apreferred;
+    else if (isvideodec)
+      preferred = playbin->vpreferred;
+
+    if (preferred) {
+      for (l = ave_list; l; l = l->next) {
+        ave = (GstAVElement *) l->data;
+
+        if (ave && ave->sink &&
+            !strcmp (preferred, GST_OBJECT_NAME (ave->sink))) {
+          GST_DEBUG_OBJECT (playbin,
+              "Preferred sink '%s' for decoder '%s'",
+              gst_plugin_feature_get_name (GST_PLUGIN_FEATURE (ave->sink)),
+              gst_plugin_feature_get_name (GST_PLUGIN_FEATURE (factory)));
+
+          ave_list = g_list_delete_link (ave_list, l);
+          ave_list = g_list_prepend (ave_list, ave);
+          break;
+        }
+      }
     }
 
     /* if it is a decoder and we don't have a fixed sink, then find out
@@ -5402,6 +5489,10 @@ activate_group (GstPlayBin * playbin, GstSourceGroup * group, GstState target)
   group->drained_id =
       g_signal_connect (uridecodebin, "drained", G_CALLBACK (drained_cb),
       group);
+  /* is called when the uridecodebin received an EOS */
+  group->wait_on_eos_id =
+      g_signal_connect (uridecodebin, "wait-on-eos",
+      G_CALLBACK (wait_on_eos_cb), group);
 
   /* will be called when a new media type is found. We return a list of decoders
    * including sinks for decodebin to try */
@@ -5506,6 +5597,7 @@ activate_group (GstPlayBin * playbin, GstSourceGroup * group, GstState target)
   /* allow state changes of the playbin affect the group elements now */
   group_set_locked_state_unlocked (playbin, group, FALSE);
   group->active = TRUE;
+  group->pending_about_to_finish = FALSE;
   GST_SOURCE_GROUP_UNLOCK (group);
 
   return state_ret;
@@ -5574,6 +5666,7 @@ error_cleanup:
       REMOVE_SIGNAL (group->uridecodebin, group->notify_source_id);
       REMOVE_SIGNAL (group->uridecodebin, group->source_setup_id);
       REMOVE_SIGNAL (group->uridecodebin, group->drained_id);
+      REMOVE_SIGNAL (group->uridecodebin, group->wait_on_eos_id);
       REMOVE_SIGNAL (group->uridecodebin, group->autoplug_factories_id);
       REMOVE_SIGNAL (group->uridecodebin, group->autoplug_select_id);
       REMOVE_SIGNAL (group->uridecodebin, group->autoplug_continue_id);
@@ -5663,6 +5756,7 @@ deactivate_group (GstPlayBin * playbin, GstSourceGroup * group)
     REMOVE_SIGNAL (group->uridecodebin, group->notify_source_id);
     REMOVE_SIGNAL (group->uridecodebin, group->source_setup_id);
     REMOVE_SIGNAL (group->uridecodebin, group->drained_id);
+    REMOVE_SIGNAL (group->uridecodebin, group->wait_on_eos_id);
     REMOVE_SIGNAL (group->uridecodebin, group->autoplug_factories_id);
     REMOVE_SIGNAL (group->uridecodebin, group->autoplug_select_id);
     REMOVE_SIGNAL (group->uridecodebin, group->autoplug_continue_id);

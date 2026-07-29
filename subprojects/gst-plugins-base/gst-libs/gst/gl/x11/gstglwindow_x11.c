@@ -70,6 +70,18 @@ struct _GstGLWindowX11Private
 G_DEFINE_TYPE_WITH_PRIVATE (GstGLWindowX11, gst_gl_window_x11,
     GST_TYPE_GL_WINDOW);
 
+typedef struct
+{
+  unsigned long flags;
+  unsigned long functions;
+  unsigned long decorations;
+  long input_mode;
+  unsigned long status;
+}
+MotifWmHints, MwmHints;
+
+#define MWM_HINTS_DECORATIONS   (1L << 1)
+
 static guintptr gst_gl_window_x11_get_display (GstGLWindow * window);
 guintptr gst_gl_window_x11_get_gl_context (GstGLWindow * window);
 gboolean gst_gl_window_x11_activate (GstGLWindow * window, gboolean activate);
@@ -228,6 +240,28 @@ gst_gl_window_x11_create_window (GstGLWindowX11 * window_x11)
       x, y, width, height, 0,
       window_x11->visual_info->depth, InputOutput,
       window_x11->visual_info->visual, mask, &win_attr);
+
+  /* Set USPosition for toplevel window */
+  if (!window_x11->parent_win) {
+    XSizeHints hints = {0};
+    hints.flags  = USPosition;
+    XSetWMNormalHints (window_x11->device, window_x11->internal_win_id, &hints);
+  }
+
+  /* Set decoration for toplevel window */
+  Atom atom = XInternAtom (window_x11->device, "_MOTIF_WM_HINTS", True);
+  if (!window_x11->parent_win && atom != None) {
+    MotifWmHints hints;
+    gboolean decorations = !g_getenv ("GST_GL_X11_NO_DECORATIONS");
+    hints.flags |= MWM_HINTS_DECORATIONS;
+    hints.decorations = decorations ? 1 << 0 : 0;
+
+    XChangeProperty (window_x11->device, window_x11->internal_win_id,
+                     atom, atom, 32, PropModeReplace,
+                     (guchar *) &hints, sizeof (MotifWmHints) / sizeof (long));
+
+    XSync (window_x11->device, FALSE);
+  }
 
   gst_gl_window_x11_handle_events (GST_GL_WINDOW (window_x11),
       window_x11->priv->handle_events);
@@ -409,6 +443,12 @@ _show_window (GstGLWindow * window)
   GstGLWindowX11 *window_x11 = GST_GL_WINDOW_X11 (window);
   guint width = window_x11->priv->preferred_width;
   guint height = window_x11->priv->preferred_height;
+
+  if (window_x11->priv->render_rect.w > 0 &&
+      window_x11->priv->render_rect.h > 0) {
+    width = window_x11->priv->render_rect.w;
+    height = window_x11->priv->render_rect.h;
+  }
 
   if (!window_x11->visible) {
     if (!window_x11->parent_win) {

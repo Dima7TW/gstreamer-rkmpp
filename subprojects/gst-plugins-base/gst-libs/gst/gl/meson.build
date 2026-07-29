@@ -1112,6 +1112,8 @@ if build_gstgl
   # case-insensitive FS would include gst-libs/gl/egl/egl.h as EGL/egl.h.
   common_args += '-I@0@'.format(meson.current_build_dir())
 
+  libdrm_dep = dependency('libdrm')
+
   gstgl = library('gstgl-' + api_version,
     gl_sources, gl_egl_sources, gl_x11_sources, gl_wayland_sources, gl_viv_fb_sources, gl_priv_sources, gl_enumtypes_c, gl_enumtypes_h,
     c_args : common_args,
@@ -1123,7 +1125,7 @@ if build_gstgl
     darwin_versions : osxversion,
     install : true,
     dependencies : [gst_base_dep, video_dep, gmodule_dep, gl_lib_deps,
-                    gl_platform_deps, gl_winsys_deps, gl_misc_deps],
+                    gl_platform_deps, gl_winsys_deps, gl_misc_deps, libdrm_dep],
     # don't confuse EGL/egl.h with gst-libs/gl/egl/egl.h on case-insensitive file systems
     implicit_include_directories : false)
 

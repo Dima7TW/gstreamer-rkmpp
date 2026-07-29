@@ -590,46 +590,48 @@ xattach_failed:
 
 /* We are called with the x_lock taken */
 static void
-gst_xwindow_draw_borders (GstXWindow * window, GstVideoRectangle * rect)
+gst_xwindow_draw_borders (GstXWindow * window, GstVideoRectangle * render_rect,
+    GstVideoRectangle * video_rect)
 {
   gint t1, t2;
   GstXvContext *context;
 
   g_return_if_fail (window != NULL);
-  g_return_if_fail (rect != NULL);
+  g_return_if_fail (render_rect != NULL);
+  g_return_if_fail (video_rect != NULL);
 
   context = window->context;
 
   XSetForeground (context->disp, window->gc, context->black);
 
   /* Left border */
-  if (rect->x > window->render_rect.x) {
+  if (video_rect->x > render_rect->x) {
     XFillRectangle (context->disp, window->win, window->gc,
-        window->render_rect.x, window->render_rect.y,
-        rect->x - window->render_rect.x, window->render_rect.h);
+        render_rect->x, render_rect->y,
+        video_rect->x - render_rect->x, render_rect->h);
   }
 
   /* Right border */
-  t1 = rect->x + rect->w;
-  t2 = window->render_rect.x + window->render_rect.w;
+  t1 = video_rect->x + video_rect->w;
+  t2 = render_rect->x + render_rect->w;
   if (t1 < t2) {
     XFillRectangle (context->disp, window->win, window->gc,
-        t1, window->render_rect.y, t2 - t1, window->render_rect.h);
+        t1, render_rect->y, t2 - t1, render_rect->h);
   }
 
   /* Top border */
-  if (rect->y > window->render_rect.y) {
+  if (video_rect->y > render_rect->y) {
     XFillRectangle (context->disp, window->win, window->gc,
-        window->render_rect.x, window->render_rect.y,
-        window->render_rect.w, rect->y - window->render_rect.y);
+        render_rect->x, render_rect->y,
+        render_rect->w, video_rect->y - render_rect->y);
   }
 
   /* Bottom border */
-  t1 = rect->y + rect->h;
-  t2 = window->render_rect.y + window->render_rect.h;
+  t1 = video_rect->y + video_rect->h;
+  t2 = render_rect->y + render_rect->h;
   if (t1 < t2) {
     XFillRectangle (context->disp, window->win, window->gc,
-        window->render_rect.x, t1, window->render_rect.w, t2 - t1);
+        render_rect->x, t1, render_rect->w, t2 - t1);
   }
 }
 
@@ -639,15 +641,31 @@ gst_xvimage_memory_render (GstXvImageMemory * mem, GstVideoRectangle * src_crop,
 {
   GstXvContext *context;
   XvImage *xvimage;
+  GstVideoRectangle render_rect;
 
   context = window->context;
 
   g_mutex_lock (&context->lock);
   xvimage = gst_xvimage_memory_get_xvimage (mem);
 
-  if (draw_border) {
-    gst_xwindow_draw_borders (window, dst_crop);
+  render_rect = window->render_rect;
+  if (window->internal) {
+    if (window->have_render_rect) {
+      XMoveResizeWindow (context->disp, window->win,
+          window->render_rect.x, window->render_rect.y,
+          window->render_rect.w, window->render_rect.h);
+      window->render_rect.x = window->render_rect.y = 0;
+      window->have_render_rect = FALSE;
+    }
+
+    dst_crop->x -= render_rect.x;
+    dst_crop->y -= render_rect.y;
+    render_rect.x = render_rect.y = 0;
   }
+
+  if (draw_border)
+    gst_xwindow_draw_borders (window, &render_rect, dst_crop);
+
 #ifdef HAVE_XSHM
   if (context->use_xshm) {
     GST_LOG ("XvShmPutImage with image %dx%d and window %dx%d, from xvimage %p",

@@ -163,9 +163,6 @@ struct _GstDecodeBin
   GMutex expose_lock;           /* Protects exposal and removal of groups */
   GstDecodeChain *decode_chain; /* Top level decode chain */
   guint nbpads;                 /* unique identifier for source pads */
-  guint nbpads_eos;             /* number of pads in EOS */
-  gboolean wait_on_eos;         /* wait EOS on other pads */
-  GCond eos_cond;               /* condition to block the pad in EOS */
 
   GMutex factories_lock;
   guint32 factories_cookie;     /* Cookie from last time when factories was updated */
@@ -227,8 +224,6 @@ struct _GstDecodeBinClass
 
   /* fired when the last group is drained */
   void (*drained) (GstElement * element);
-  /* emitted when an EOS is received */
-    gboolean (*wait_on_eos) (GstElement * element, guint eos_received);
 };
 
 /* signals */
@@ -241,7 +236,6 @@ enum
   SIGNAL_AUTOPLUG_SORT,
   SIGNAL_AUTOPLUG_QUERY,
   SIGNAL_DRAINED,
-  SIGNAL_WAIT_ON_EOS,
   LAST_SIGNAL
 };
 
@@ -864,20 +858,6 @@ gst_decode_bin_class_init (GstDecodeBinClass * klass)
       G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstDecodeBinClass, drained),
       NULL, NULL, NULL, G_TYPE_NONE, 0, G_TYPE_NONE);
 
-  /**
-   * GstDecodeBin::wait-on-eos
-   * @bin: The decodebin
-   * @nb_eos: the number of EOS received
-   *
-   * This signal is emitted once decodebin has received an EOS.
-   *
-   * Since: 1.20
-   */
-  gst_decode_bin_signals[SIGNAL_WAIT_ON_EOS] =
-      g_signal_new ("wait-on-eos", G_TYPE_FROM_CLASS (klass),
-      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstDecodeBinClass, wait_on_eos),
-      NULL, NULL, NULL, G_TYPE_BOOLEAN, 1, G_TYPE_UINT);
-
   g_object_class_install_property (gobject_klass, PROP_CAPS,
       g_param_spec_boxed ("caps", "Caps", "The caps on which to stop decoding.",
           GST_TYPE_CAPS, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
@@ -1119,7 +1099,6 @@ gst_decode_bin_init (GstDecodeBin * decode_bin)
     gst_object_unref (pad);
   }
 
-  g_cond_init (&decode_bin->eos_cond);
   g_mutex_init (&decode_bin->expose_lock);
   decode_bin->decode_chain = NULL;
 
@@ -1186,7 +1165,6 @@ gst_decode_bin_finalize (GObject * object)
 
   decode_bin = GST_DECODE_BIN (object);
 
-  g_cond_clear (&decode_bin->eos_cond);
   g_mutex_clear (&decode_bin->expose_lock);
   g_mutex_clear (&decode_bin->dyn_lock);
   g_mutex_clear (&decode_bin->subtitle_lock);
@@ -4328,17 +4306,6 @@ gst_decode_pad_handle_eos (GstDecodePad * pad)
   }
 
   EXPOSE_LOCK (dbin);
-  dbin->nbpads_eos++;
-  g_signal_emit (G_OBJECT (dbin),
-      gst_decode_bin_signals[SIGNAL_WAIT_ON_EOS], 0, dbin->nbpads_eos,
-      &dbin->wait_on_eos);
-  g_cond_broadcast (&dbin->eos_cond);
-  GST_DEBUG_OBJECT (dbin, "dbin->nbpads_eos %u wait_on_eos %u",
-      dbin->nbpads_eos, dbin->wait_on_eos);
-
-  while (dbin->wait_on_eos)
-    g_cond_wait (&dbin->eos_cond, &dbin->expose_lock);
-
   if (dbin->decode_chain) {
     drain_and_switch_chains (dbin->decode_chain, pad, &last_group, &drained,
         &switched);
@@ -5394,10 +5361,6 @@ unblock_pads (GstDecodeBin * dbin)
     GST_DEBUG_OBJECT (dpad, "unblocked");
     gst_object_unref (dpad);
   }
-  dbin->nbpads = 0;
-  dbin->nbpads_eos = 0;
-  dbin->wait_on_eos = FALSE;
-  g_cond_broadcast (&dbin->eos_cond);
 }
 
 static void

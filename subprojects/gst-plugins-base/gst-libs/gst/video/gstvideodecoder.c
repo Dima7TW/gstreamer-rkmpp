@@ -303,7 +303,7 @@ GST_DEBUG_CATEGORY (videodecoder_debug);
 #define GST_CAT_DEFAULT videodecoder_debug
 
 /* properties */
-#define DEFAULT_QOS                 TRUE
+static gboolean DEFAULT_QOS = TRUE;
 #define DEFAULT_MAX_ERRORS          GST_VIDEO_DECODER_MAX_ERRORS
 #define DEFAULT_MIN_FORCE_KEY_UNIT_INTERVAL 0
 #define DEFAULT_DISCARD_CORRUPTED_FRAMES FALSE
@@ -592,6 +592,7 @@ gst_video_decoder_class_init (GstVideoDecoderClass * klass)
 {
   GObjectClass *gobject_class;
   GstElementClass *gstelement_class;
+  const gchar *env;
 
   gobject_class = G_OBJECT_CLASS (klass);
   gstelement_class = GST_ELEMENT_CLASS (klass);
@@ -631,6 +632,9 @@ gst_video_decoder_class_init (GstVideoDecoderClass * klass)
    *
    * Since: 1.18
    */
+  env = g_getenv ("GST_VIDEO_DECODER_QOS");
+  if (env && !strcmp (env, "0"))
+    DEFAULT_QOS = FALSE;
   g_object_class_install_property (gobject_class, PROP_QOS,
       g_param_spec_boolean ("qos", "Quality of Service",
           "Handle Quality-of-Service events from downstream",

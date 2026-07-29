@@ -105,7 +105,7 @@ gst_lookup_xv_port_from_adaptor (GstXvContext * context,
    the port via XvGrabPort */
 static GstCaps *
 gst_xvcontext_get_xv_support (GstXvContext * context,
-    const GstXvContextConfig * config, GError ** error)
+    GstXvContextConfig * config, GError ** error)
 {
   gint i;
   XvAdaptorInfo *adaptors;
@@ -158,9 +158,11 @@ gst_xvcontext_get_xv_support (GstXvContext * context,
   if (!context->xv_port_id)
     goto no_ports;
 
+  config->dma_client_id = context->xv_port_id;
+
   /* Set XV_AUTOPAINT_COLORKEY and XV_DOUBLE_BUFFER and XV_COLORKEY */
   {
-    int count, todo = 4;
+    int count, todo = 7;
     XvAttribute *const attr = XvQueryPortAttributes (context->disp,
         context->xv_port_id, &count);
     static const char autopaint[] = "XV_AUTOPAINT_COLORKEY";
@@ -168,6 +170,9 @@ gst_xvcontext_get_xv_support (GstXvContext * context,
     static const char colorkey[] = "XV_COLORKEY";
     static const char iturbt709[] = "XV_ITURBT_709";
     static const char *xv_colorspace = "XV_COLORSPACE";
+    static const char dma_client_id[] = XV_DMA_CLIENT_PROP;
+    static const char dma_drm_fourcc[] = XV_DMA_DRM_FOURCC_PROP;
+    static const char dma_drm_afbc[] = XV_DMA_DRM_AFBC_PROP;
 
     GST_DEBUG ("Checking %d Xv port attributes", count);
 
@@ -176,6 +181,7 @@ gst_xvcontext_get_xv_support (GstXvContext * context,
     context->have_colorkey = FALSE;
     context->have_iturbt709 = FALSE;
     context->have_xvcolorspace = FALSE;
+    context->have_dma_client = FALSE;
 
     for (i = 0; ((i < count) && todo); i++) {
       GST_DEBUG ("Got attribute %s", attr[i].name);
@@ -247,6 +253,19 @@ gst_xvcontext_get_xv_support (GstXvContext * context,
       } else if (!strcmp (attr[i].name, xv_colorspace)) {
         context->have_xvcolorspace = TRUE;
         todo--;
+      } else if (!strcmp (attr[i].name, dma_client_id)) {
+        const Atom atom = XInternAtom (context->disp, dma_client_id, False);
+
+        XvSetPortAttribute (context->disp, context->xv_port_id, atom,
+            config->dma_client_id);
+        todo--;
+        context->have_dma_client = TRUE;
+      } else if (!strcmp (attr[i].name, dma_drm_fourcc)) {
+        todo--;
+        context->have_dma_drm_fourcc = TRUE;
+      } else if (!strcmp (attr[i].name, dma_drm_afbc)) {
+        todo--;
+        context->have_dma_drm_afbc = TRUE;
       }
     }
 
@@ -360,6 +379,50 @@ gst_xvcontext_get_xv_support (GstXvContext * context,
 
   if (gst_caps_is_empty (caps))
     goto no_caps;
+
+  if (context->have_dma_drm_afbc) {
+    GstCaps *format_caps;
+
+    format_caps = gst_caps_new_simple ("video/x-raw",
+        "format", G_TYPE_STRING, "NV12",
+        "width", GST_TYPE_INT_RANGE, 1, max_w,
+        "height", GST_TYPE_INT_RANGE, 1, max_h,
+        "framerate", GST_TYPE_FRACTION_RANGE, 0, 1, G_MAXINT, 1, NULL);
+    gst_caps_set_simple (format_caps, "arm-afbc", G_TYPE_INT, 1, NULL);
+    gst_caps_append (caps, format_caps);
+  }
+
+  if (context->have_dma_drm_fourcc) {
+    GstCaps *format_caps;
+
+    format_caps = gst_caps_new_simple ("video/x-raw",
+        "format", G_TYPE_STRING, "NV16",
+        "width", GST_TYPE_INT_RANGE, 1, max_w,
+        "height", GST_TYPE_INT_RANGE, 1, max_h,
+        "framerate", GST_TYPE_FRACTION_RANGE, 0, 1, G_MAXINT, 1, NULL);
+    if (context->have_dma_drm_afbc) {
+      gst_caps_ref (format_caps);
+      gst_caps_append (caps, format_caps);
+
+      gst_caps_set_simple (format_caps, "arm-afbc", G_TYPE_INT, 1, NULL);
+    }
+    gst_caps_append (caps, format_caps);
+
+    format_caps = gst_caps_new_simple ("video/x-raw",
+        "format", G_TYPE_STRING, "NV12_10LE40",
+        "width", GST_TYPE_INT_RANGE, 1, max_w,
+        "height", GST_TYPE_INT_RANGE, 1, max_h,
+        "framerate", GST_TYPE_FRACTION_RANGE, 0, 1, G_MAXINT, 1, NULL);
+    if (context->have_dma_drm_afbc) {
+      gst_caps_ref (format_caps);
+      gst_caps_append (caps, format_caps);
+
+      gst_caps_set_simple (format_caps, "arm-afbc", G_TYPE_INT, 1, NULL);
+    }
+    gst_caps_append (caps, format_caps);
+  }
+
+  GST_DEBUG ("Final caps caps: %" GST_PTR_FORMAT, caps);
 
   return caps;
 
@@ -920,6 +983,10 @@ gst_xvcontext_get_format_from_info (GstXvContext * context,
 {
   GList *list = NULL;
 
+  /* HACK: Use NV12 format for fake formats */
+  if (context->drm_fourcc != -1)
+    return DRM_FORMAT_NV12;
+
   list = context->formats_list;
 
   while (list) {
@@ -981,18 +1048,21 @@ gst_xv_touchdevice_free (GstXvTouchDevice * device)
 #endif
 
 GstXWindow *
-gst_xvcontext_create_xwindow (GstXvContext * context, gint width, gint height)
+gst_xvcontext_create_xwindow (GstXvContext * context, gint x, gint y,
+    gint width, gint height, gboolean position, gboolean decorations)
 {
   GstXWindow *window;
   Atom wm_delete;
   Atom hints_atom = None;
+  XSizeHints hints;
 
   g_return_val_if_fail (GST_IS_XVCONTEXT (context), NULL);
 
   window = g_new0 (GstXWindow, 1);
 
   window->context = gst_xvcontext_ref (context);
-  window->render_rect.x = window->render_rect.y = 0;
+  window->render_rect.x = x;
+  window->render_rect.y = y;
   window->render_rect.w = width;
   window->render_rect.h = height;
   window->have_render_rect = FALSE;
@@ -1011,7 +1081,19 @@ gst_xvcontext_create_xwindow (GstXvContext * context, gint width, gint height)
   g_mutex_lock (&context->lock);
 
   window->win = XCreateSimpleWindow (context->disp,
-      context->root, 0, 0, width, height, 0, 0, context->black);
+      context->root, x, y, width, height, 0, 0, context->black);
+
+  /* Apply size hints */
+  hints.flags = USSize;
+
+  if (position)
+    hints.flags |= USPosition;
+
+  hints.x = x;
+  hints.y = y;
+  hints.width = width;
+  hints.height = height;
+  XSetWMNormalHints (context->disp, window->win, &hints);
 
   /* We have to do that to prevent X from redrawing the background on
    * ConfigureNotify. This takes away flickering of video when resizing. */
@@ -1031,7 +1113,7 @@ gst_xvcontext_create_xwindow (GstXvContext * context, gint width, gint height)
     hints = g_malloc0 (sizeof (MotifWmHints));
 
     hints->flags |= MWM_HINTS_DECORATIONS;
-    hints->decorations = 1 << 0;
+    hints->decorations = decorations ? 1 << 0 : 0;
 
     XChangeProperty (context->disp, window->win,
         hints_atom, hints_atom, 32, PropModeReplace,
@@ -1310,6 +1392,7 @@ gst_xwindow_update_geometry (GstXWindow * window)
     window->render_rect.x = window->render_rect.y = 0;
     window->render_rect.w = attr.width;
     window->render_rect.h = attr.height;
+    window->have_render_rect = FALSE;
   }
 
   g_mutex_unlock (&context->lock);

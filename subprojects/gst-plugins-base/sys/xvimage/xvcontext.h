@@ -42,6 +42,19 @@
 
 #include <gst/video/video.h>
 
+#include <libdrm/drm_fourcc.h>
+
+#define XV_DMA_CLIENT_PROP      "XV_DMA_CLIENT_ID"
+#define XV_DMA_VER_STRIDE_PROP  "XV_DMA_VER_STRIDE"
+#define XV_DMA_HOR_STRIDE_PROP  "XV_DMA_HOR_STRIDE"
+#define XV_DMA_DRM_FOURCC_PROP  "XV_DMA_DRM_FOURCC"
+#define XV_DMA_DRM_AFBC_PROP  "XV_DMA_DRM_AFBC"
+#define XV_DMA_CLIENT_PATH      "/tmp/.xv_dma_client"
+
+#ifndef DRM_FORMAT_NV12_10
+#define DRM_FORMAT_NV12_10 fourcc_code('N', 'A', '1', '2')
+#endif
+
 G_BEGIN_DECLS
 
 typedef struct _GstXvContextConfig GstXvContextConfig;
@@ -70,6 +83,8 @@ struct _GstXvContextConfig
   gint hue;
   gint saturation;
   gboolean cb_changed;
+
+  guint dma_client_id;
 };
 
 /**
@@ -167,6 +182,11 @@ struct _GstXvContext
   gboolean have_double_buffer;
   gboolean have_iturbt709;
   gboolean have_xvcolorspace;
+  gboolean have_dma_client;
+  gboolean have_dma_drm_fourcc;
+  gboolean have_dma_drm_afbc;
+
+  guint32 drm_fourcc;
 
   GList *formats_list;
 
@@ -267,7 +287,10 @@ struct _GstXvTouchDevice {
 G_END_DECLS
 
 GstXWindow *   gst_xvcontext_create_xwindow     (GstXvContext * context,
-                                                 gint width, gint height);
+                                                 gint x, gint y,
+                                                 gint width, gint height,
+                                                 gboolean position,
+                                                 gboolean decorations);
 GstXWindow *   gst_xvcontext_create_xwindow_from_xid (GstXvContext * context, XID xid);
 
 void           gst_xwindow_destroy              (GstXWindow * window);

@@ -761,6 +761,11 @@ _set_render_rectangle (gpointer data)
 
   window_resize (render->window_egl, render->rect.w, render->rect.h);
 
+  /* try to position the xdg surface with hacked wayland server API */
+  if (render->window_egl->window.xdg_surface)
+    xdg_surface_set_window_geometry (render->window_egl->window.xdg_surface,
+        render->rect.x, render->rect.y, 0, 0);
+
   render->window_egl->window.render_rect = render->rect;
 }
 

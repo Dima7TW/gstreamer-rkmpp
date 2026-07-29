@@ -121,6 +121,7 @@
 #include <gst/video/colorbalance.h>
 /* Helper functions */
 #include <gst/video/gstvideometa.h>
+#include <gst/allocators/gstdmabuf.h>
 
 /* Object header */
 #include "xvimagesink.h"
@@ -136,6 +137,11 @@
 #ifdef HAVE_XI2
 #include <X11/extensions/XInput2.h>
 #endif
+
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 GST_DEBUG_CATEGORY_EXTERN (gst_debug_xv_context);
 GST_DEBUG_CATEGORY_EXTERN (gst_debug_xv_image_pool);
@@ -194,6 +200,7 @@ enum
   PROP_DRAW_BORDERS,
   PROP_WINDOW_WIDTH,
   PROP_WINDOW_HEIGHT,
+  PROP_DECORATIONS,
   PROP_LAST
 };
 
@@ -235,6 +242,173 @@ GST_ELEMENT_REGISTER_DEFINE_WITH_CODE (xvimagesink, "xvimagesink",
 /*                                                               */
 /* ============================================================= */
 
+static void
+gst_xv_image_sink_check_dma_client (GstXvImageSink * xvimagesink)
+{
+  GstXvContext *context = xvimagesink->context;
+  Atom prop_atom;
+  int xv_value = 0;
+
+  if (!context->have_dma_client)
+    return;
+
+  g_mutex_lock (&context->lock);
+  prop_atom = XInternAtom (context->disp, XV_DMA_CLIENT_PROP, True);
+  if (prop_atom != None) {
+    XvGetPortAttribute (context->disp, context->xv_port_id,
+        prop_atom, &xv_value);
+  }
+  g_mutex_unlock (&context->lock);
+
+  context->have_dma_client = xv_value > 0;
+}
+
+static void
+gst_xv_image_sink_flush_dma_client (GstXvImageSink * xvimagesink)
+{
+  GstXvContext *context = xvimagesink->context;
+  Atom prop_atom;
+  int xv_value;
+
+  if (!context->have_dma_client)
+    return;
+
+  g_mutex_lock (&context->lock);
+  prop_atom = XInternAtom (context->disp, XV_DMA_CLIENT_PROP, True);
+  if (prop_atom != None) {
+    XvSetPortAttribute (context->disp, context->xv_port_id,
+        prop_atom, xvimagesink->config.dma_client_id);
+    XvGetPortAttribute (context->disp, context->xv_port_id,
+        prop_atom, &xv_value);
+  }
+  g_mutex_unlock (&context->lock);
+}
+
+static void
+gst_xv_image_sink_disable_dma_client (GstXvImageSink * xvimagesink)
+{
+  GstXvContext *context = xvimagesink->context;
+  Atom prop_atom;
+
+  if (!context->have_dma_client)
+    return;
+
+  g_mutex_lock (&context->lock);
+  prop_atom = XInternAtom (context->disp, XV_DMA_CLIENT_PROP, True);
+  if (prop_atom != None) {
+    XvSetPortAttribute (context->disp, context->xv_port_id, prop_atom, 0);
+  }
+  g_mutex_unlock (&context->lock);
+
+  context->have_dma_client = FALSE;
+}
+
+static gboolean
+gst_xv_image_sink_send_dma_params (GstXvImageSink * xvimagesink,
+    gint hor_stride, gint ver_stride, gboolean afbc)
+{
+  GstXvContext *context = xvimagesink->context;
+  Atom prop_atom;
+  gboolean error = FALSE;
+
+  if (!context->have_dma_client)
+    return FALSE;
+
+  g_mutex_lock (&context->lock);
+  prop_atom = XInternAtom (context->disp, XV_DMA_HOR_STRIDE_PROP, True);
+  if (prop_atom != None) {
+    XvSetPortAttribute (context->disp, context->xv_port_id,
+        prop_atom, hor_stride);
+  } else {
+    error = TRUE;
+  }
+  prop_atom = XInternAtom (context->disp, XV_DMA_VER_STRIDE_PROP, True);
+  if (prop_atom != None) {
+    XvSetPortAttribute (context->disp, context->xv_port_id,
+        prop_atom, ver_stride);
+  } else {
+    error = TRUE;
+  }
+  prop_atom = XInternAtom (context->disp, XV_DMA_DRM_FOURCC_PROP, True);
+  if (prop_atom != None) {
+    XvSetPortAttribute (context->disp, context->xv_port_id,
+        prop_atom, context->drm_fourcc);
+  }
+  prop_atom = XInternAtom (context->disp, XV_DMA_DRM_AFBC_PROP, True);
+  if (prop_atom != None) {
+    XvSetPortAttribute (context->disp, context->xv_port_id, prop_atom, afbc);
+  }
+  g_mutex_unlock (&context->lock);
+
+  if (error == TRUE) {
+    gst_xv_image_sink_disable_dma_client (xvimagesink);
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+static gboolean
+gst_xv_image_sink_send_dma_fd (GstXvImageSink * xvimagesink, gint dma_fd)
+{
+  GstXvContext *context = xvimagesink->context;
+  struct sockaddr_un addr;
+  struct iovec iov;
+  struct msghdr msg;
+  struct cmsghdr *header;
+  gchar buf[CMSG_SPACE (sizeof (int))];
+  gint socket_fd;
+
+  if (!context->have_dma_client)
+    return FALSE;
+
+  gst_xv_image_sink_flush_dma_client (xvimagesink);
+
+  socket_fd = socket (PF_UNIX, SOCK_DGRAM, 0);
+  if (socket_fd < 0)
+    goto failed;
+
+  addr.sun_family = AF_LOCAL;
+  snprintf (addr.sun_path, sizeof (addr.sun_path),
+      XV_DMA_CLIENT_PATH ".%d", xvimagesink->config.dma_client_id);
+  addr.sun_path[sizeof (addr.sun_path) - 1] = '\0';
+
+  if (connect (socket_fd, (struct sockaddr *) &addr, sizeof (addr)) < 0)
+    goto failed;
+
+  iov.iov_base = buf;
+  iov.iov_len = 1;
+
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = buf;
+  msg.msg_controllen = sizeof (buf);
+  msg.msg_name = NULL;
+  msg.msg_namelen = 0;
+
+  header = CMSG_FIRSTHDR (&msg);
+  header->cmsg_level = SOL_SOCKET;
+  header->cmsg_type = SCM_RIGHTS;
+
+  header->cmsg_len = CMSG_LEN (sizeof (int));
+  *((int *) CMSG_DATA (header)) = dma_fd;
+  sendmsg (socket_fd, &msg, 0);
+
+  /* Send am empty msg at the end */
+  header->cmsg_len = CMSG_LEN (0);
+  sendmsg (socket_fd, &msg, 0);
+
+  close (socket_fd);
+  return TRUE;
+
+failed:
+  gst_xv_image_sink_disable_dma_client (xvimagesink);
+
+  if (socket_fd >= 0)
+    close (socket_fd);
+
+  return FALSE;
+}
 
 /* This function puts a GstXvImage on a GstXvImageSink's window. Returns FALSE
  * if no window was available  */
@@ -250,6 +424,10 @@ gst_xv_image_sink_xvimage_put (GstXvImageSink * xvimagesink,
   GstVideoRectangle dst = { 0, };
   GstVideoRectangle mem_crop;
   GstXWindow *xwindow;
+
+  /* Ask for window handle */
+  if (G_UNLIKELY (!xvimagesink->xwindow))
+    gst_video_overlay_prepare_window_handle (GST_VIDEO_OVERLAY (xvimagesink));
 
   /* We take the flow_lock. If expose is in there we don't want to run
      concurrently from the data flow thread */
@@ -322,6 +500,13 @@ gst_xv_image_sink_xvimage_put (GstXvImageSink * xvimagesink,
     memcpy (&result, &xwindow->render_rect, sizeof (GstVideoRectangle));
   }
 
+  if (gst_buffer_n_memory (xvimage) > 1) {
+    GstMemory *dma_mem = gst_buffer_peek_memory (xvimage, 1);
+    gint dma_fd = gst_dmabuf_memory_get_fd (dma_mem);
+    if (dma_fd >= 0)
+      gst_xv_image_sink_send_dma_fd (xvimagesink, dma_fd);
+  }
+
   gst_xvimage_memory_render (mem, &src, xwindow, &result, draw_border);
 
   g_mutex_unlock (&xvimagesink->flow_lock);
@@ -363,7 +548,7 @@ gst_xv_image_sink_xwindow_set_title (GstXvImageSink * xvimagesink,
 /* This function handles a GstXWindow creation
  * The width and height are the actual pixel size on the display */
 static GstXWindow *
-gst_xv_image_sink_xwindow_new (GstXvImageSink * xvimagesink,
+gst_xv_image_sink_xwindow_new (GstXvImageSink * xvimagesink, gint x, gint y,
     gint width, gint height)
 {
   GstXWindow *xwindow = NULL;
@@ -373,7 +558,8 @@ gst_xv_image_sink_xwindow_new (GstXvImageSink * xvimagesink,
 
   context = xvimagesink->context;
 
-  xwindow = gst_xvcontext_create_xwindow (context, width, height);
+  xwindow = gst_xvcontext_create_xwindow (context, x, y, width, height,
+      xvimagesink->pending_render_rect, xvimagesink->decorations);
 
   /* set application name as a title */
   gst_xv_image_sink_xwindow_set_title (xvimagesink, xwindow, NULL);
@@ -845,6 +1031,27 @@ config_failed:
 }
 
 static gboolean
+gst_xv_video_info_from_caps (GstVideoInfo * info, const GstCaps * caps)
+{
+  GstStructure *s;
+  gint value;
+
+  if (!gst_video_info_from_caps (info, caps))
+    return FALSE;
+
+  /* parse AFBC from caps */
+  s = gst_caps_get_structure (caps, 0);
+  if (gst_structure_get_int (s, "arm-afbc", &value)) {
+    if (value)
+      GST_VIDEO_INFO_SET_AFBC (info);
+    else
+      GST_VIDEO_INFO_UNSET_AFBC (info);
+  }
+
+  return TRUE;
+}
+
+static gboolean
 gst_xv_image_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 {
   GstXvImageSink *xvimagesink;
@@ -866,7 +1073,7 @@ gst_xv_image_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   if (!gst_caps_can_intersect (context->caps, caps))
     goto incompatible_caps;
 
-  if (!gst_video_info_from_caps (&info, caps))
+  if (!gst_xv_video_info_from_caps (&info, caps))
     goto invalid_format;
 
   xvimagesink->fps_n = info.fps_n;
@@ -946,10 +1153,24 @@ gst_xv_image_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
     goto no_display_size;
 
   g_mutex_lock (&xvimagesink->flow_lock);
-  if (!xvimagesink->xwindow) {
+  if (!xvimagesink->xwindow_id) {
+    GST_WARNING_OBJECT (xvimagesink, "overlay window not ready");
+  } else if (!xvimagesink->xwindow) {
+    gint x, y, w, h;
+
+    if (xvimagesink->pending_render_rect) {
+      x = xvimagesink->render_rect.x;
+      y = xvimagesink->render_rect.y;
+      w = xvimagesink->render_rect.w;
+      h = xvimagesink->render_rect.h;
+    } else {
+      x = y = 0;
+      w = GST_VIDEO_SINK_WIDTH (xvimagesink);
+      h = GST_VIDEO_SINK_HEIGHT (xvimagesink);
+    }
+
     xvimagesink->xwindow = gst_xv_image_sink_xwindow_new (xvimagesink,
-        GST_VIDEO_SINK_WIDTH (xvimagesink),
-        GST_VIDEO_SINK_HEIGHT (xvimagesink));
+        x, y, w, h);
   }
 
   if (xvimagesink->pending_render_rect) {
@@ -974,6 +1195,20 @@ gst_xv_image_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
   if (oldpool) {
     gst_buffer_pool_set_active (oldpool, FALSE);
     gst_object_unref (oldpool);
+  }
+
+  context->drm_fourcc = -1;
+
+  if (GST_VIDEO_INFO_FORMAT (&info) == GST_VIDEO_FORMAT_NV12_10LE40) {
+    if (!context->have_dma_drm_fourcc)
+      return FALSE;
+
+    context->drm_fourcc = DRM_FORMAT_NV12_10;
+  } else if (GST_VIDEO_INFO_FORMAT (&info) == GST_VIDEO_FORMAT_NV16) {
+    if (!context->have_dma_drm_fourcc)
+      return FALSE;
+
+    context->drm_fourcc = DRM_FORMAT_NV16;
   }
 
   return TRUE;
@@ -1128,6 +1363,47 @@ gst_xv_image_sink_show_frame (GstVideoSink * vsink, GstBuffer * buf)
     if (res != GST_FLOW_OK)
       goto no_buffer;
 
+    if ((crop_meta = gst_buffer_get_video_crop_meta (buf))) {
+      GstVideoCropMeta *dmeta = gst_buffer_add_video_crop_meta (to_put);
+
+      dmeta->x = crop_meta->x;
+      dmeta->y = crop_meta->y;
+      dmeta->width = crop_meta->width;
+      dmeta->height = crop_meta->height;
+    }
+
+    mem = gst_buffer_peek_memory (buf, 0);
+    gst_xv_image_sink_check_dma_client (xvimagesink);
+    if (gst_is_dmabuf_memory (mem) && xvimagesink->context->have_dma_client) {
+      GstVideoMeta *vmeta = gst_buffer_get_video_meta (buf);
+      gint hor_stride, ver_stride;
+
+      /* If this buffer is dmabuf and the xserver supports dma_client, we will
+         send the dmabuf fd directly */
+      GST_LOG_OBJECT (xvimagesink, "buffer %p is dmabuf, will send dmabuf fd",
+          buf);
+
+      /* Stash the dmabuf in index 1 */
+      gst_buffer_insert_memory (to_put, 1, gst_buffer_get_memory (buf, 0));
+
+      /* Try to send dmabuf params */
+      if (vmeta) {
+        hor_stride = vmeta->stride[0];
+        ver_stride = vmeta->height;
+
+        if (vmeta->n_planes > 1)
+          ver_stride = vmeta->offset[1] / hor_stride;
+      } else {
+        hor_stride = xvimagesink->info.width;
+        ver_stride = xvimagesink->info.height;
+      }
+
+      if (gst_xv_image_sink_send_dma_params (xvimagesink,
+              hor_stride, ver_stride,
+              GST_VIDEO_INFO_IS_AFBC (&xvimagesink->info)))
+        goto put_image;
+    }
+
     GST_CAT_LOG_OBJECT (GST_CAT_PERFORMANCE, xvimagesink,
         "slow copy buffer %p into bufferpool buffer %p", buf, to_put);
 
@@ -1143,17 +1419,9 @@ gst_xv_image_sink_show_frame (GstVideoSink * vsink, GstBuffer * buf)
 
     gst_video_frame_unmap (&dest);
     gst_video_frame_unmap (&src);
-
-    if ((crop_meta = gst_buffer_get_video_crop_meta (buf))) {
-      GstVideoCropMeta *dmeta = gst_buffer_add_video_crop_meta (to_put);
-
-      dmeta->x = crop_meta->x;
-      dmeta->y = crop_meta->y;
-      dmeta->width = crop_meta->width;
-      dmeta->height = crop_meta->height;
-    }
   }
 
+put_image:
   if (!gst_xv_image_sink_xvimage_put (xvimagesink, to_put))
     goto no_window;
 
@@ -1186,6 +1454,12 @@ invalid_buffer:
   }
 no_window:
   {
+    /* HACK: Defer window prepare when getting zero window handle */
+    if (!xvimagesink->xwindow_id) {
+      GST_WARNING_OBJECT (xvimagesink, "buffer dropped (window not ready)");
+      goto done;
+    }
+
     /* No Window available to put our image into */
     GST_WARNING_OBJECT (xvimagesink, "could not output image - no window");
     res = GST_FLOW_ERROR;
@@ -1242,7 +1516,7 @@ gst_xv_image_sink_propose_allocation (GstBaseSink * bsink, GstQuery * query)
   if (caps == NULL)
     goto no_caps;
 
-  if (!gst_video_info_from_caps (&info, caps))
+  if (!gst_xv_video_info_from_caps (&info, caps))
     goto invalid_caps;
 
   /* the normal size of a frame */
@@ -1401,18 +1675,7 @@ gst_xv_image_sink_set_window_handle (GstVideoOverlay * overlay, guintptr id)
     xvimagesink->xwindow = NULL;
   }
 
-  /* If the xid is 0 we go back to an internal window */
-  if (xwindow_id == 0) {
-    /* If no width/height caps nego did not happen window will be created
-       during caps nego then */
-    if (GST_VIDEO_SINK_WIDTH (xvimagesink)
-        && GST_VIDEO_SINK_HEIGHT (xvimagesink)) {
-      xwindow =
-          gst_xv_image_sink_xwindow_new (xvimagesink,
-          GST_VIDEO_SINK_WIDTH (xvimagesink),
-          GST_VIDEO_SINK_HEIGHT (xvimagesink));
-    }
-  } else {
+  if ((xvimagesink->xwindow_id = xwindow_id)) {
     xwindow = gst_xvcontext_create_xwindow_from_xid (context, xwindow_id);
     gst_xwindow_set_event_handling (xwindow, xvimagesink->handle_events);
   }
@@ -1430,6 +1693,11 @@ gst_xv_image_sink_expose (GstVideoOverlay * overlay)
 
   GST_DEBUG ("doing expose");
   gst_xv_image_sink_xwindow_update_geometry (xvimagesink);
+
+  if (GST_VIDEO_SINK_WIDTH (xvimagesink) <= 0 ||
+      GST_VIDEO_SINK_HEIGHT (xvimagesink) <= 0)
+    return;
+
   gst_xv_image_sink_xvimage_put (xvimagesink, NULL);
 }
 
@@ -1811,6 +2079,9 @@ gst_xv_image_sink_set_property (GObject * object, guint prop_id,
     case PROP_DRAW_BORDERS:
       xvimagesink->draw_borders = g_value_get_boolean (value);
       break;
+    case PROP_DECORATIONS:
+      xvimagesink->decorations = g_value_get_boolean (value);
+      break;
     default:
       if (!gst_video_overlay_set_property (object, PROP_LAST, prop_id, value))
         G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1900,6 +2171,9 @@ gst_xv_image_sink_get_property (GObject * object, guint prop_id,
         g_value_set_uint64 (value, xvimagesink->xwindow->height);
       else
         g_value_set_uint64 (value, 0);
+      break;
+    case PROP_DECORATIONS:
+      g_value_set_boolean (value, xvimagesink->decorations);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -2061,6 +2335,11 @@ gst_xv_image_sink_init (GstXvImageSink * xvimagesink)
   xvimagesink->handle_expose = TRUE;
 
   xvimagesink->draw_borders = TRUE;
+
+  /* HACK: Use a non-zero initial ID to detect overlay mode */
+  xvimagesink->xwindow_id = -1;
+
+  xvimagesink->decorations = TRUE;
 }
 
 static void
@@ -2196,6 +2475,11 @@ gst_xv_image_sink_class_init (GstXvImageSinkClass * klass)
       g_param_spec_uint64 ("window-height", "window-height",
           "Height of the window", 0, G_MAXUINT64, 0,
           G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_DECORATIONS,
+      g_param_spec_boolean ("decorations", "decorations",
+          "Allow window decorations", TRUE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gobject_class->finalize = gst_xv_image_sink_finalize;
 

@@ -1233,6 +1233,28 @@ score_value (GstBaseTransform * base, const GstVideoFormatInfo * in_info,
       loss += SCORE_DEPTH_LOSS;
   }
 
+  {
+    const char *buf = g_getenv ("GST_VIDEO_CONVERT_PREFERRED_FORMAT");
+    if (buf) {
+      const char *name = GST_VIDEO_FORMAT_INFO_NAME (t_info);
+      int preferred_loss = 1;
+
+      /* lower other formats */
+      loss += 1024;
+
+      while (buf) {
+        if (buf[0] == ':')
+          buf++;
+
+        if (!strncmp (buf, name, strlen (name)))
+          loss = preferred_loss;
+
+        buf = strchr (buf, ':');
+        preferred_loss++;
+      }
+    }
+  }
+
   GST_DEBUG_OBJECT (base, "score %s -> %s = %d",
       GST_VIDEO_FORMAT_INFO_NAME (in_info),
       GST_VIDEO_FORMAT_INFO_NAME (t_info), loss);

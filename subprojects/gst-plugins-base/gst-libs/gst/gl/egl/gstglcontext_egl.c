@@ -1672,11 +1672,13 @@ gst_gl_context_egl_fetch_dma_formats (GstGLContext * context)
 
   gst_eglQueryDmaBufModifiersEXT =
       gst_gl_context_get_proc_address (context, "eglQueryDmaBufModifiersEXT");
+#if 0
   if (!gst_eglQueryDmaBufModifiersEXT) {
     GST_ERROR_OBJECT (context, "\"eglQueryDmaBufModifiersEXT\" not exposed by "
         "the implementation as required by EGL >= 1.2");
     goto failed;
   }
+#endif
 
   gl_dpy_egl = gst_gl_display_egl_from_gl_display (context->display);
   if (!gl_dpy_egl) {
@@ -1725,6 +1727,9 @@ gst_gl_context_egl_fetch_dma_formats (GstGLContext * context)
     dma_frmt.fourcc = formats[i];
     dma_frmt.modifiers = NULL;
 
+    if (!gst_eglQueryDmaBufModifiersEXT)
+      goto no_dmabuf_mod;
+
     ret = gst_eglQueryDmaBufModifiersEXT (egl_dpy, formats[i], 0,
         NULL, NULL, &num_mods);
     if (!ret) {
@@ -1769,6 +1774,7 @@ gst_gl_context_egl_fetch_dma_formats (GstGLContext * context)
     g_array_append_val (dma_formats, dma_frmt);
   }
 
+no_dmabuf_mod:
   g_array_sort (dma_formats, _compare_dma_formats);
 
   GST_OBJECT_LOCK (context);

@@ -510,6 +510,44 @@ gst_video_test_src_src_fixate (GstBaseSrc * bsrc, GstCaps * caps)
     gst_caps_unref (alpha_only_caps);
   }
 
+  /* Move NV12 to the front of the format list in caps */
+  {
+    caps = gst_caps_make_writable (caps);
+    for (guint i = 0; i < gst_caps_get_size (caps); i++) {
+      GstStructure *s = gst_caps_get_structure (caps, i);
+      const GValue *old_list = gst_structure_get_value (s, "format");
+
+      if (old_list && GST_VALUE_HOLDS_LIST (old_list)) {
+        GValue new_list = G_VALUE_INIT;
+        const gchar *preferred = "NV12";
+        gboolean found = FALSE;
+
+        g_value_init (&new_list, GST_TYPE_LIST);
+
+        for (guint j = 0; j < gst_value_list_get_size (old_list); j++) {
+            const GValue *val = gst_value_list_get_value (old_list, j);
+            if (G_VALUE_HOLDS_STRING (val) &&
+                !g_strcmp0 (g_value_get_string (val), preferred)) {
+              found = TRUE;
+              continue;
+            }
+            gst_value_list_append_value (&new_list, val);
+        }
+
+        if (found) {
+          GValue val = G_VALUE_INIT;
+          g_value_init (&val, G_TYPE_STRING);
+          g_value_set_static_string (&val, preferred);
+          gst_value_list_prepend_value (&new_list, &val);
+          g_value_unset (&val);
+        }
+
+        gst_structure_set_value (s, "format", &new_list);
+        g_value_unset (&new_list);
+      }
+    }
+  }
+
   caps = gst_caps_make_writable (caps);
   structure = gst_caps_get_structure (caps, 0);
 
