@@ -3447,6 +3447,8 @@ gst_matroska_read_common_reset (GstElement * element,
     ctx->internal_toc = NULL;
   }
   ctx->toc_updated = FALSE;
+
+  ctx->allow_skipping = !!g_getenv ("GST_MATROSKA_ALLOW_SKIP");
 }
 
 /* call with object lock held */

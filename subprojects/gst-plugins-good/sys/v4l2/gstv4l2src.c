@@ -66,7 +66,7 @@
 GST_DEBUG_CATEGORY (v4l2src_debug);
 #define GST_CAT_DEFAULT v4l2src_debug
 
-#define DEFAULT_PROP_DEVICE   "/dev/video0"
+static const gchar *DEFAULT_PROP_DEVICE = NULL;
 
 enum
 {
@@ -147,6 +147,10 @@ gst_v4l2src_class_init (GstV4l2SrcClass * klass)
   GstElementClass *element_class;
   GstBaseSrcClass *basesrc_class;
   GstPushSrcClass *pushsrc_class;
+
+  DEFAULT_PROP_DEVICE = g_getenv ("GST_V4L2SRC_DEFAULT_DEVICE");
+  if (!DEFAULT_PROP_DEVICE)
+    DEFAULT_PROP_DEVICE = "/dev/video0";
 
   gobject_class = G_OBJECT_CLASS (klass);
   element_class = GST_ELEMENT_CLASS (klass);
@@ -440,6 +444,38 @@ gst_v4l2_src_parse_fixed_struct (GstStructure * s,
 }
 
 static gint
+gst_v4l2src_get_format_loss (GstStructure * s)
+{
+  GstVideoFormat format;
+  const gchar *buf = g_getenv ("GST_V4L2_PREFERRED_FOURCC");
+  guint32 fourcc, loss;
+
+  if (!buf)
+    return 0;
+
+  format =
+      gst_video_format_from_string (gst_structure_get_string (s, "format"));
+  if (format == GST_VIDEO_FORMAT_UNKNOWN)
+    return 0;
+
+  fourcc = gst_video_format_to_fourcc (format);
+
+  loss = 0;
+  while (buf) {
+    if (buf[0] == ':')
+      buf++;
+
+    if (!strncmp (buf, (char *) &fourcc, 4))
+      return loss;
+
+    buf = strchr (buf, ':');
+    loss++;
+  }
+
+  return loss;
+}
+
+static gint
 gst_v4l2src_fixed_caps_compare (GstCaps * caps_a, GstCaps * caps_b,
     struct PreferredCapsInfo *pref)
 {
@@ -469,6 +505,11 @@ gst_v4l2src_fixed_caps_compare (GstCaps * caps_a, GstCaps * caps_b,
   // If same framerate, sort first the one with closest resolution to preference
   a_distance = ABS (aw * ah - pref->width * pref->height);
   b_distance = ABS (bw * bh - pref->width * pref->height);
+
+  if (a_distance == b_distance) {
+    a_distance = gst_v4l2src_get_format_loss (a);
+    b_distance = gst_v4l2src_get_format_loss (b);
+  }
 
   /* If the distance are equivalent, maintain the order */
   if (a_distance == b_distance)
@@ -1177,6 +1218,10 @@ gst_v4l2src_create (GstPushSrc * src, GstBuffer ** buf)
     {
       GstV4l2BufferPool *obj_pool =
           GST_V4L2_BUFFER_POOL_CAST (gst_v4l2_object_get_buffer_pool (obj));
+
+      if (g_getenv("GST_V4L2SRC_NO_CACHE_CLEAN"))
+        obj_pool->extra_buf_flags |= V4L2_BUF_FLAG_NO_CACHE_CLEAN;
+
       ret = gst_v4l2_buffer_pool_process (obj_pool, buf, NULL);
       if (obj_pool)
         gst_object_unref (obj_pool);

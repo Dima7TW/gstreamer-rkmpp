@@ -5020,6 +5020,7 @@ gst_matroska_demux_parse_blockgroup_or_simpleblock (GstMatroskaDemux * demux,
          index entries point to keyframes, but if that is not true we
          will instead skip until the next keyframe. */
       if (GST_CLOCK_TIME_IS_VALID (lace_time) &&
+          demux->common.allow_skipping &&
           stream->type == GST_MATROSKA_TRACK_TYPE_VIDEO &&
           stream->index_table && demux->common.segment.rate > 0.0) {
         GstMatroskaTrackVideoContext *videocontext =

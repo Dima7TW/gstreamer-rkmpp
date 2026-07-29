@@ -1205,6 +1205,8 @@ gst_v4l2_buffer_pool_qbuf (GstV4l2BufferPool * pool, GstBuffer * buf,
     group->buffer.field = field;
   }
 
+  group->buffer.flags |= pool->extra_buf_flags;
+
   if (frame_number) {
     group->buffer.timestamp.tv_sec = *frame_number;
     group->buffer.timestamp.tv_usec = 0;

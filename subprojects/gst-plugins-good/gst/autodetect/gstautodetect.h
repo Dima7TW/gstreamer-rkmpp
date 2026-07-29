@@ -41,6 +41,7 @@ typedef struct _GstAutoDetect {
   GstBin parent;
   
   /* configuration for subclasses */
+  const gchar *preferred;
   const gchar *media_klass; /* Audio/Video/... */
   GstElementFlags flag; /* GST_ELEMENT_FLAG_{SINK/SOURCE} */
 
