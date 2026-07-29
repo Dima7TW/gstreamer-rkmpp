@@ -191,7 +191,7 @@ static void
 gst_file_src_init (GstFileSrc * src)
 {
   src->filename = NULL;
-  src->fd = 0;
+  src->fd = -1;
   src->uri = NULL;
 
   src->is_regular = FALSE;
@@ -636,7 +636,7 @@ gst_file_src_stop (GstBaseSrc * basesrc)
   g_close (src->fd, NULL);
 
   /* zero out a lot of our state */
-  src->fd = 0;
+  src->fd = -1;
   src->is_regular = FALSE;
 
   return TRUE;

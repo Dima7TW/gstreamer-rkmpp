@@ -83,6 +83,7 @@ static gchar **exclude_args = NULL;
 static gchar *prog_name = NULL;
 
 /* pipeline status */
+static gboolean pending_async_done = FALSE;
 static gboolean is_live = FALSE;
 static gboolean buffering = FALSE;
 static LaunchExitCode last_launch_code = LEC_NO_ERROR;
@@ -754,10 +755,20 @@ bus_handler (GstBus * bus, GstMessage * message, gpointer data)
             PRINT (_("Prerolled, waiting for progress to finish...\n"));
             break;
           }
+          if (pending_async_done) {
+            PRINT (_("Prerolled, waiting for async message to finish...\n"));
+            break;
+          }
 
           do_initial_play (pipeline);
         }
         /* else not an interesting message */
+        break;
+      }
+      case GST_MESSAGE_ASYNC_DONE:
+      {
+        if (target_state == GST_STATE_PAUSED)
+          do_initial_play (pipeline);
         break;
       }
       case GST_MESSAGE_BUFFERING:{
@@ -1308,6 +1319,7 @@ real_main (int argc, char *argv[])
       break;
     case GST_STATE_CHANGE_ASYNC:
       PRINT (_("Pipeline is PREROLLING ...\n"));
+      pending_async_done = TRUE;
       break;
     default:
       break;

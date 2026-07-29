@@ -126,23 +126,6 @@ typedef struct _GstCapsImpl
 /* lock to protect multiple invocations of static caps to caps conversion */
 G_LOCK_DEFINE_STATIC (static_caps_lock);
 
-#ifndef GST_CAPS_FEATURE_MEMORY_DMABUF
-#define GST_CAPS_FEATURE_MEMORY_DMABUF "memory:DMABuf"
-#endif
-
-/* HACK: dma memory would likely provide system memory through mmap */
-static gboolean
-gst_caps_features_drop_dma (GstCapsFeatures * features)
-{
-  if (gst_caps_features_is_any (features) ||
-      !gst_caps_features_contains (features, GST_CAPS_FEATURE_MEMORY_DMABUF))
-    return FALSE;
-
-  gst_caps_features_remove (features, GST_CAPS_FEATURE_MEMORY_DMABUF);
-  gst_caps_features_add (features, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
-  return TRUE;
-}
-
 static void gst_caps_transform_to_string (const GValue * src_value,
     GValue * dest_value);
 static gboolean gst_caps_from_string_inplace (GstCaps * caps,
@@ -1763,8 +1746,6 @@ gst_caps_is_subset (const GstCaps * subset, const GstCaps * superset)
     if (!f1)
       f1 = GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY;
 
-    f1 = gst_caps_features_copy (f1);
-retry:
     for (j = GST_CAPS_LEN (superset) - 1; j >= 0; j--) {
       s2 = gst_caps_get_structure_unchecked (superset, j);
       f2 = gst_caps_get_features_unchecked (superset, j);
@@ -1778,11 +1759,6 @@ retry:
         break;
       }
     }
-
-    if (j == -1 && gst_caps_features_drop_dma (f1))
-      goto retry;
-
-    gst_caps_features_free (f1);
 
     /* If we found no superset for this subset structure
      * we return FALSE immediately */
@@ -2026,26 +2002,10 @@ gst_caps_can_intersect (const GstCaps * caps1, const GstCaps * caps2)
       features2 = gst_caps_get_features_unchecked (caps2, k);
       if (!features2)
         features2 = GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY;
-
-      features1 = gst_caps_features_copy (features1);
-      features2 = gst_caps_features_copy (features2);
-retry:
       if (gst_caps_features_is_equal (features1, features2) &&
           gst_structure_can_intersect (struct1, struct2)) {
-        gst_caps_features_free (features1);
-        gst_caps_features_free (features2);
         return TRUE;
-      } else {
-        if (gst_caps_features_drop_dma (features1))
-          goto retry;
-
-        if (gst_caps_features_drop_dma (features2))
-          goto retry;
       }
-
-      gst_caps_features_free (features1);
-      gst_caps_features_free (features2);
-
       /* move down left */
       k++;
       if (G_UNLIKELY (j == 0))
@@ -2068,7 +2028,6 @@ gst_caps_intersect_zig_zag (GstCaps * caps1, GstCaps * caps2)
   GstCapsFeatures *features2;
   GstCaps *dest;
   GstStructure *istruct;
-  gboolean drop_dma = FALSE;
 
   dest = gst_caps_new_empty ();
   /* run zigzag on top line then right line, this preserves the caps order
@@ -2089,8 +2048,6 @@ gst_caps_intersect_zig_zag (GstCaps * caps1, GstCaps * caps2)
    */
   len1 = GST_CAPS_LEN (caps1);
   len2 = GST_CAPS_LEN (caps2);
-
-retry:
   for (i = 0; i < len1 + len2 - 1; i++) {
     /* caps1 index goes from 0 to GST_CAPS_LEN (caps1)-1 */
     j = MIN (i, len1 - 1);
@@ -2108,15 +2065,6 @@ retry:
       features2 = gst_caps_get_features_unchecked (caps2, k);
       if (!features2)
         features2 = GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY;
-
-      features1 = gst_caps_features_copy (features1);
-      features2 = gst_caps_features_copy (features2);
-
-      if (drop_dma) {
-        gst_caps_features_drop_dma (features1);
-        gst_caps_features_drop_dma (features2);
-      }
-
       if (gst_caps_features_is_equal (features1, features2)) {
         istruct = gst_structure_intersect (struct1, struct2);
         if (istruct) {
@@ -2130,10 +2078,6 @@ retry:
                 gst_caps_features_copy_conditional (features1));
         }
       }
-
-      gst_caps_features_free (features1);
-      gst_caps_features_free (features2);
-
       /* move down left */
       k++;
       if (G_UNLIKELY (j == 0))
@@ -2141,13 +2085,6 @@ retry:
       j--;
     }
   }
-
-  /* try without DMA */
-  if (CAPS_IS_EMPTY (dest) && !drop_dma) {
-    drop_dma = TRUE;
-    goto retry;
-  }
-
   return dest;
 }
 
@@ -2175,34 +2112,20 @@ gst_caps_intersect_first (GstCaps * caps1, GstCaps * caps2)
   GstCapsFeatures *features2;
   GstCaps *dest;
   GstStructure *istruct;
-  gboolean drop_dma = FALSE;
 
   dest = gst_caps_new_empty ();
   len1 = GST_CAPS_LEN (caps1);
   len2 = GST_CAPS_LEN (caps2);
-
-retry:
   for (i = 0; i < len1; i++) {
     struct1 = gst_caps_get_structure_unchecked (caps1, i);
     features1 = gst_caps_get_features_unchecked (caps1, i);
     if (!features1)
       features1 = GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY;
-
-    features1 = gst_caps_features_copy (features1);
-
     for (j = 0; j < len2; j++) {
       struct2 = gst_caps_get_structure_unchecked (caps2, j);
       features2 = gst_caps_get_features_unchecked (caps2, j);
       if (!features2)
         features2 = GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY;
-
-      features2 = gst_caps_features_copy (features2);
-
-      if (drop_dma) {
-        gst_caps_features_drop_dma (features1);
-        gst_caps_features_drop_dma (features2);
-      }
-
       if (gst_caps_features_is_equal (features1, features2)) {
         istruct = gst_structure_intersect (struct1, struct2);
         if (istruct) {
@@ -2216,17 +2139,7 @@ retry:
                 gst_caps_features_copy_conditional (features1));
         }
       }
-
-      gst_caps_features_free (features2);
     }
-
-    gst_caps_features_free (features1);
-  }
-
-  /* try without DMA */
-  if (CAPS_IS_EMPTY (dest) && !drop_dma) {
-    drop_dma = TRUE;
-    goto retry;
   }
 
   return dest;
